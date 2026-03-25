@@ -68,7 +68,7 @@ namespace ffrunner
             ApplyVramFix();
 
             mainWindow = new MainWindow(Args);
-
+            MainWindow = mainWindow;
             mainWindow.Show();
             // Apply DPI scaling
             var source = PresentationSource.FromVisual(App.mainWindow);
@@ -114,8 +114,7 @@ namespace ffrunner
 
             // Force layout update so ActualWidth/ActualHeight are correct
             App.mainWindow.UpdateLayout();
-            mainWindow.Show();
-            MainWindow = mainWindow;
+            
         }
 
         [StructLayout(LayoutKind.Sequential)]

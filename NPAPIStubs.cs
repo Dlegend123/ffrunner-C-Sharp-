@@ -170,12 +170,20 @@ namespace ffrunner
 
         private static bool IsLocationObject(IntPtr objPtr)
         {
-            if (objPtr == IntPtr.Zero)
-                return false;
-
-            lock (s_locationObjectPtrs)
+            try
             {
-                return s_locationObjectPtrs.Contains(objPtr);
+                if (objPtr == IntPtr.Zero)
+                    return false;
+
+                lock (s_locationObjectPtrs)
+                {
+                    return s_locationObjectPtrs.Contains(objPtr);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"IsLocationObject threw: {ex}");
+                return false;
             }
         }
 
@@ -242,6 +250,7 @@ namespace ffrunner
                 return $"<npvariantbuffer-error:{ex.GetType().Name}>";
             }
         }
+
         public static short NPN_GetValue(IntPtr instance, int variable, IntPtr retValue)
         {
             Logger.Log($"NPN_GetValue variable={variable}");
@@ -258,9 +267,11 @@ namespace ffrunner
             // ✅ Just write the pointer to the NPObject
             Marshal.WriteIntPtr(retValue, s_browserObjectPtr);
 
-            Logger.Log($"NPN_GetValue returning obj=0x{s_browserObjectPtr.ToInt64():x} refCount={browserObject.referenceCount}");
+            Logger.Log(
+                $"NPN_GetValue returning obj=0x{s_browserObjectPtr.ToInt64():x} refCount={browserObject.referenceCount}");
             return (short)Structs.NPError.NPERR_NO_ERROR;
         }
+
         public static void SetBrowserWindowHandle(IntPtr hwnd)
         {
             Logger.Log($"SetBrowserWindowHandle hwnd=0x{hwnd.ToString("x")}");
@@ -315,22 +326,33 @@ namespace ffrunner
             // Minimal browser NPClass behavior: everything returns false / no-op (matches ffrunner.c)
             var allocateDel = PinDelegate<NPAPIProcs.NP_AllocateDelegate>((IntPtr instancePtr, IntPtr aClassPtr) =>
             {
-                Logger.Log($"NP_Allocate instance=0x{instancePtr.ToString("x")}, class=0x{aClassPtr.ToString("x")}");
-                var npobj = new NPObject
+                try
                 {
-                    _class = aClassPtr,
-                    referenceCount = 1,
-                };
+                    Logger.Log(
+                        $"NP_Allocate instance=0x{instancePtr.ToString("x")}, class=0x{aClassPtr.ToString("x")}");
+                    var npobj = new NPObject
+                    {
+                        _class = aClassPtr,
+                        referenceCount = 1,
+                    };
 
-                IntPtr p = Marshal.AllocHGlobal(Marshal.SizeOf<NPObject>());
-                Marshal.StructureToPtr(npobj, p, false);
+                    IntPtr p = Marshal.AllocHGlobal(Marshal.SizeOf<NPObject>());
+                    Marshal.StructureToPtr(npobj, p, false);
 
-                lock (s_allocatedObjectPtrs)
+                    lock (s_allocatedObjectPtrs)
+                    {
+                        s_allocatedObjectPtrs.Add(p);
+                    }
+
+                    return p;
+                }
+                catch (Exception ex)
                 {
-                    s_allocatedObjectPtrs.Add(p);
+                    Logger.Log($"NP_Allocate threw: {ex}");
+                    return IntPtr.Zero;
                 }
 
-                return p;
+
             });
 
             var deallocateDel = PinDelegate<NPAPIProcs.NP_DeallocateDelegate>((IntPtr npobjPtr) =>
@@ -371,13 +393,20 @@ namespace ffrunner
             });
             var hasPropertyDel = PinDelegate<NPAPIProcs.NP_HasPropertyDelegate>((IntPtr npobjPtr, IntPtr name) =>
             {
-                Logger.Log($"NP_HasProperty obj=0x{npobjPtr.ToString("x")}, name=0x{name.ToString("x")}");
+                try
+                {
+                    Logger.Log($"NP_HasProperty obj=0x{npobjPtr.ToString("x")}, name=0x{name.ToString("x")}");
 
-                if (npobjPtr == s_browserObjectPtr && IdentifierEqualsString(name, "location"))
-                    return true;
+                    if (npobjPtr == s_browserObjectPtr && IdentifierEqualsString(name, "location"))
+                        return true;
 
-                if (IsLocationObject(npobjPtr) && IdentifierEqualsString(name, "href"))
-                    return true;
+                    if (IsLocationObject(npobjPtr) && IdentifierEqualsString(name, "href"))
+                        return true;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"NP_HasProperty threw: {ex}");
+                }
 
                 return false;
             });
@@ -433,8 +462,16 @@ namespace ffrunner
             var constructDel = PinDelegate<NPAPIProcs.NP_ConstructDelegate>(
                 (IntPtr npobj, IntPtr argsPtr, uint argCount, IntPtr resultPtr) =>
                 {
-                    Logger.Log(
-                        $"NP_Construct obj=0x{npobj:x}, argc={argCount}, args={DescribeNPVariantsBuffer(argsPtr, argCount)}, resultPtr=0x{resultPtr:x}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
+                    try
+                    {
+                        Logger.Log(
+                            $"NP_Construct obj=0x{npobj:x}, argc={argCount}, args={DescribeNPVariantsBuffer(argsPtr, argCount)}, resultPtr=0x{resultPtr:x}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"NP_Construct threw: {ex}");
+                    }
+
                     return false;
                 });
 
@@ -557,10 +594,18 @@ namespace ffrunner
             // NPN_GetURLProc
             var geturlDel = pin<NPAPIProcs.NPN_GetURLDelegate>((IntPtr instance, IntPtr urlPtr, IntPtr windowPtr) =>
             {
-                string url = ReadAnsiString(urlPtr);
-                string window = ReadAnsiString(windowPtr);
-                Logger.Log($"NPN_GetURL url='{url}', window='{window}'");
-                Network.RegisterGetRequest(url, false, IntPtr.Zero);
+                try
+                {
+                    string url = ReadAnsiString(urlPtr);
+                    string window = ReadAnsiString(windowPtr);
+                    Logger.Log($"NPN_GetURL url='{url}', window='{window}'");
+                    Network.RegisterGetRequest(url, false, IntPtr.Zero);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"NPN_GetURL threw: {ex}");
+                }
+
                 return 0; // NPERR_NO_ERROR
             });
             funcs.geturl = Marshal.GetFunctionPointerForDelegate(geturlDel);
@@ -571,23 +616,31 @@ namespace ffrunner
                     IntPtr windowPtr, uint len, IntPtr buf,
                     [MarshalAs(UnmanagedType.I1)] bool file) =>
                 {
-                    Logger.Log(
-                        $"NPN_PostURL called urlPtr=0x{urlPtr.ToString("x")}, windowPtr=0x{windowPtr.ToString("x")}, len={len}, buf=0x{buf.ToString("x")}, file={file}");
-                    string url = ReadAnsiString(urlPtr);
-                    string window = ReadAnsiString(windowPtr);
-                    Logger.Log(
-                        $"NPN_PostURL url='{url}', window='{window}', len={len}, file={file}, buf=0x{buf.ToString("x")}");
-
-                    byte[] data = Array.Empty<byte>();
-                    uint safeLen = Math.Min(len, 0x1000u);
-                    if (safeLen > 0 && buf != IntPtr.Zero && IsReadablePointer(buf))
+                    try
                     {
-                        int n = checked((int)safeLen);
-                        data = new byte[n];
-                        Marshal.Copy(buf, data, 0, n);
+                        Logger.Log(
+                            $"NPN_PostURL called urlPtr=0x{urlPtr.ToString("x")}, windowPtr=0x{windowPtr.ToString("x")}, len={len}, buf=0x{buf.ToString("x")}, file={file}");
+                        string url = ReadAnsiString(urlPtr);
+                        string window = ReadAnsiString(windowPtr);
+                        Logger.Log(
+                            $"NPN_PostURL url='{url}', window='{window}', len={len}, file={file}, buf=0x{buf.ToString("x")}");
+
+                        byte[] data = Array.Empty<byte>();
+                        uint safeLen = Math.Min(len, 0x1000u);
+                        if (safeLen > 0 && buf != IntPtr.Zero && IsReadablePointer(buf))
+                        {
+                            int n = checked((int)safeLen);
+                            data = new byte[n];
+                            Marshal.Copy(buf, data, 0, n);
+                        }
+
+                        Network.RegisterPostRequest(url, false, IntPtr.Zero, safeLen, data);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"NPN_PostURL threw: {ex}");
                     }
 
-                    Network.RegisterPostRequest(url, false, IntPtr.Zero, safeLen, data);
                     return 0; // NPERR_NO_ERROR
                 });
             funcs.posturl = Marshal.GetFunctionPointerForDelegate(posturlDel);
@@ -608,21 +661,37 @@ namespace ffrunner
             var geturlNotifyDel = pin<NPAPIProcs.NPN_GetURLNotifyDelegate>(
                 (IntPtr instance, IntPtr urlPtr, IntPtr windowPtr, IntPtr notifyData) =>
                 {
-                    Logger.Log($"NPN_GetURLNotify called notifyData=0x{notifyData.ToString("x")}");
-                    string url = ReadAnsiString(urlPtr);
-                    string window = ReadAnsiString(windowPtr);
-                    Logger.Log(
-                        $"NPN_GetURLNotify url='{url}', window='{window}', notifyData=0x{notifyData.ToString("x")}");
-                    Network.RegisterGetRequest(url, true, notifyData);
+                    try
+                    {
+                        Logger.Log($"NPN_GetURLNotify called notifyData=0x{notifyData.ToString("x")}");
+                        string url = ReadAnsiString(urlPtr);
+                        string window = ReadAnsiString(windowPtr);
+                        Logger.Log(
+                            $"NPN_GetURLNotify url='{url}', window='{window}', notifyData=0x{notifyData.ToString("x")}");
+                        Network.RegisterGetRequest(url, true, notifyData);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"NPN_GetURLNotify threw: {ex}");
+                    }
+
                     return 0; // NPERR_NO_ERROR
                 });
             funcs.geturlnotify = Marshal.GetFunctionPointerForDelegate(geturlNotifyDel);
             var invokeStub = pin<NPAPIProcs.NPN_InvokeDelegate>(
                 (IntPtr npp, IntPtr obj, IntPtr methodName, IntPtr argsPtr, uint argCount, IntPtr resultPtr) =>
                 {
-                    Logger.Log(
-                        $"NPN_Invoke obj={DescribeNPObjectRefCount(obj)}, method={DescribeNPIdentifier(methodName)}, argc={argCount}, args={DescribeNPVariantsBuffer(argsPtr, argCount)}, resultPtr=0x{resultPtr.ToString("x")}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
-                    WriteVoidVariant(resultPtr);
+                    try
+                    {
+                        Logger.Log(
+                            $"NPN_Invoke obj={DescribeNPObjectRefCount(obj)}, method={DescribeNPIdentifier(methodName)}, argc={argCount}, args={DescribeNPVariantsBuffer(argsPtr, argCount)}, resultPtr=0x{resultPtr.ToString("x")}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
+                        WriteVoidVariant(resultPtr);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"NPN_Invoke threw: {ex}");
+                    }
+
                     return false;
                 });
             funcs.invoke = Marshal.GetFunctionPointerForDelegate(invokeStub);
@@ -632,21 +701,29 @@ namespace ffrunner
                     IntPtr windowPtr, uint len, IntPtr buf,
                     [MarshalAs(UnmanagedType.I1)] bool file, IntPtr notifyData) =>
                 {
-                    string url = ReadAnsiString(urlPtr);
-                    string window = ReadAnsiString(windowPtr);
-                    Logger.Log(
-                        $"NPN_PostURLNotify url='{url}', window='{window}', len={len}, file={file}, notifyData=0x{notifyData.ToString("x")}, buf=0x{buf.ToString("x")}");
-
-                    byte[] data = Array.Empty<byte>();
-                    uint safeLen = Math.Min(len, 0x1000u);
-                    if (safeLen > 0 && buf != IntPtr.Zero && IsReadablePointer(buf))
+                    try
                     {
-                        int n = checked((int)safeLen);
-                        data = new byte[n];
-                        Marshal.Copy(buf, data, 0, n);
+                        string url = ReadAnsiString(urlPtr);
+                        string window = ReadAnsiString(windowPtr);
+                        Logger.Log(
+                            $"NPN_PostURLNotify url='{url}', window='{window}', len={len}, file={file}, notifyData=0x{notifyData.ToString("x")}, buf=0x{buf.ToString("x")}");
+
+                        byte[] data = Array.Empty<byte>();
+                        uint safeLen = Math.Min(len, 0x1000u);
+                        if (safeLen > 0 && buf != IntPtr.Zero && IsReadablePointer(buf))
+                        {
+                            int n = checked((int)safeLen);
+                            data = new byte[n];
+                            Marshal.Copy(buf, data, 0, n);
+                        }
+
+                        Network.RegisterPostRequest(url, true, notifyData, safeLen, data);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"NPN_PostURLNotify threw: {ex}");
                     }
 
-                    Network.RegisterPostRequest(url, true, notifyData, safeLen, data);
                     return 0; // NPERR_NO_ERROR
                 });
             funcs.posturlnotify = Marshal.GetFunctionPointerForDelegate(posturlNotifyDel);
@@ -717,15 +794,22 @@ namespace ffrunner
             var getPropertyStub = pin<NPAPIProcs.NPN_GetPropertyDelegate>(
                 (IntPtr npp, IntPtr obj, IntPtr propertyName, IntPtr resultPtr) =>
                 {
-                    Logger.Log(
-                        $"NPN_GetProperty obj={DescribeNPObjectRefCount(obj)}, property={DescribeNPIdentifier(propertyName)}, resultPtr=0x{resultPtr.ToString("x")}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
-                    if (resultPtr != IntPtr.Zero)
+                    try
                     {
-                        WriteVoidVariant(resultPtr);
-                    }
+                        Logger.Log(
+                            $"NPN_GetProperty obj={DescribeNPObjectRefCount(obj)}, property={DescribeNPIdentifier(propertyName)}, resultPtr=0x{resultPtr.ToString("x")}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
+                        if (resultPtr != IntPtr.Zero)
+                        {
+                            WriteVoidVariant(resultPtr);
+                        }
 
-                    Logger.Log(
-                        $"NPN_GetProperty obj={DescribeNPObjectRefCount(obj)}, property={DescribeNPIdentifier(propertyName)}, resultPtr=0x{resultPtr.ToString("x")}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
+                        Logger.Log(
+                            $"NPN_GetProperty obj={DescribeNPObjectRefCount(obj)}, property={DescribeNPIdentifier(propertyName)}, resultPtr=0x{resultPtr.ToString("x")}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"NPN_GetProperty threw: {ex}");
+                    }
 
                     return false;
                 });
@@ -977,22 +1061,29 @@ namespace ffrunner
 
         private static void UnitySendMessage(string targetClass, string msg, NPVariant val)
         {
-            Logger.Log(
-                $"UnitySendMessage called tid={Environment.CurrentManagedThreadId}, target='{targetClass}', msg='{msg}', val={DescribeNPVariant(val)}");
-            var dispatcher = Application.Current?.Dispatcher;
-            if (dispatcher != null)
+            try
             {
-                dispatcher.BeginInvoke(() =>
-                    {
-                        Logger.Log(
-                            $"UnitySendMessage exit tid={Environment.CurrentManagedThreadId}, target='{targetClass}', msg='{msg}'");
-                        UnitySendMessageInternal(targetClass, msg, val);
-                    },
-                    System.Windows.Threading.DispatcherPriority.Send);
+                Logger.Log(
+                    $"UnitySendMessage called tid={Environment.CurrentManagedThreadId}, target='{targetClass}', msg='{msg}', val={DescribeNPVariant(val)}");
+                var dispatcher = Application.Current?.Dispatcher;
+                if (dispatcher != null)
+                {
+                    dispatcher.BeginInvoke(() =>
+                        {
+                            Logger.Log(
+                                $"UnitySendMessage exit tid={Environment.CurrentManagedThreadId}, target='{targetClass}', msg='{msg}'");
+                            UnitySendMessageInternal(targetClass, msg, val);
+                        },
+                        System.Windows.Threading.DispatcherPriority.Send);
+                }
+                else
+                {
+                    UnitySendMessageInternal(targetClass, msg, val);
+                }
             }
-            else
+            catch (Exception ex)
             {
-                UnitySendMessageInternal(targetClass, msg, val);
+                Logger.Log($"UnitySendMessage threw: {ex}");
             }
 
         }
@@ -1167,62 +1258,87 @@ namespace ffrunner
 
         private static string ReadAnsiString(IntPtr ptr, int maxBytes = 4096)
         {
-            Logger.Log($"ReadAnsiString: ptr=0x{ptr.ToString("x")}, maxBytes={maxBytes}");
-            if (ptr == IntPtr.Zero || !IsReadablePointer(ptr))
-                return string.Empty;
-
-            var bytes = new List<byte>(Math.Min(maxBytes, 256));
-            for (int i = 0; i < maxBytes; i++)
+            try
             {
-                IntPtr current = IntPtr.Add(ptr, i);
-                if (!IsReadablePointer(current))
-                    break;
+                Logger.Log($"ReadAnsiString: ptr=0x{ptr.ToString("x")}, maxBytes={maxBytes}");
+                if (ptr == IntPtr.Zero || !IsReadablePointer(ptr))
+                    return string.Empty;
 
-                byte b = Marshal.ReadByte(current);
-                if (b == 0)
-                    break;
+                var bytes = new List<byte>(Math.Min(maxBytes, 256));
+                for (int i = 0; i < maxBytes; i++)
+                {
+                    IntPtr current = IntPtr.Add(ptr, i);
+                    if (!IsReadablePointer(current))
+                        break;
 
-                bytes.Add(b);
+                    byte b = Marshal.ReadByte(current);
+                    if (b == 0)
+                        break;
+
+                    bytes.Add(b);
+                }
+
+                return bytes.Count == 0 ? string.Empty : Encoding.ASCII.GetString(bytes.ToArray());
+            }
+            catch (Exception e)
+            {
+                Logger.Log($"ReadAnsiString threw: {e}");
+                return string.Empty;
             }
 
-            return bytes.Count == 0 ? string.Empty : Encoding.ASCII.GetString(bytes.ToArray());
         }
 
         private static bool IsReadablePointer(IntPtr ptr)
         {
-            Logger.Log($"IsReadablePointer: ptr=0x{ptr.ToString("x")}");
-            if (ptr == IntPtr.Zero) return false;
-            if (VirtualQuery(ptr, out var mbi, (IntPtr)Marshal.SizeOf<MEMORY_BASIC_INFORMATION>()) == IntPtr.Zero)
+            try
+            {
+                Logger.Log($"IsReadablePointer: ptr=0x{ptr.ToString("x")}");
+                if (ptr == IntPtr.Zero) return false;
+                if (VirtualQuery(ptr, out var mbi, (IntPtr)Marshal.SizeOf<MEMORY_BASIC_INFORMATION>()) == IntPtr.Zero)
+                    return false;
+
+                const uint MEM_COMMIT = 0x1000;
+                const uint PAGE_NOACCESS = 0x01;
+                const uint PAGE_GUARD = 0x100;
+
+                if (mbi.State != MEM_COMMIT) return false;
+                if ((mbi.Protect & PAGE_NOACCESS) != 0) return false;
+                if ((mbi.Protect & PAGE_GUARD) != 0) return false;
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"IsReadablePointer threw: {ex}");
                 return false;
-
-            const uint MEM_COMMIT = 0x1000;
-            const uint PAGE_NOACCESS = 0x01;
-            const uint PAGE_GUARD = 0x100;
-
-            if (mbi.State != MEM_COMMIT) return false;
-            if ((mbi.Protect & PAGE_NOACCESS) != 0) return false;
-            if ((mbi.Protect & PAGE_GUARD) != 0) return false;
-
-            return true;
+            }
         }
 
         private static bool IsExecutablePointer(IntPtr ptr)
         {
-            Logger.Log($"IsExecutablePointer checking 0x{ptr.ToString("x")}");
-            if (ptr == IntPtr.Zero) return false;
-            if (VirtualQuery(ptr, out var mbi, (IntPtr)Marshal.SizeOf<MEMORY_BASIC_INFORMATION>()) == IntPtr.Zero)
+            try
+            {
+                Logger.Log($"IsExecutablePointer checking 0x{ptr.ToString("x")}");
+                if (ptr == IntPtr.Zero) return false;
+                if (VirtualQuery(ptr, out var mbi, (IntPtr)Marshal.SizeOf<MEMORY_BASIC_INFORMATION>()) == IntPtr.Zero)
+                    return false;
+
+                const uint MEM_COMMIT = 0x1000;
+                const uint PAGE_EXECUTE = 0x10;
+                const uint PAGE_EXECUTE_READ = 0x20;
+                const uint PAGE_EXECUTE_READWRITE = 0x40;
+                const uint PAGE_EXECUTE_WRITECOPY = 0x80;
+
+                if (mbi.State != MEM_COMMIT) return false;
+
+                uint execMask = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+                return (mbi.Protect & execMask) != 0;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"IsExecutablePointer threw: {ex}");
                 return false;
-
-            const uint MEM_COMMIT = 0x1000;
-            const uint PAGE_EXECUTE = 0x10;
-            const uint PAGE_EXECUTE_READ = 0x20;
-            const uint PAGE_EXECUTE_READWRITE = 0x40;
-            const uint PAGE_EXECUTE_WRITECOPY = 0x80;
-
-            if (mbi.State != MEM_COMMIT) return false;
-
-            uint execMask = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-            return (mbi.Protect & execMask) != 0;
+            }
         }
 
         private static IntPtr TryFindClassPtr(IntPtr root)
@@ -1232,37 +1348,44 @@ namespace ffrunner
 
         private static IntPtr TryFindClassPtrInternal(IntPtr ptr, int depth)
         {
-            Logger.Log($"TryFindClassPtrInternal: depth={depth}, ptr=0x{ptr.ToString("x")}");
-            if (depth > 2 || !IsReadablePointer(ptr))
-                return IntPtr.Zero;
-
-            for (int i = 0; i < 4; i++)
+            try
             {
-                IntPtr candidate = Marshal.ReadIntPtr(ptr, i * IntPtr.Size);
-                if (!IsReadablePointer(candidate)) continue;
+                Logger.Log($"TryFindClassPtrInternal: depth={depth}, ptr=0x{ptr.ToString("x")}");
+                if (depth > 2 || !IsReadablePointer(ptr))
+                    return IntPtr.Zero;
 
-                int version = Marshal.ReadInt32(candidate);
-                Logger.Verbose(
-                    $"TryFindClassPtr: depth={depth}, offset={i * IntPtr.Size}, candidate=0x{candidate.ToString("x")}, version={version}");
-
-                // Normal NPClass path
-                if (version == 3 || version == 2)
-                    return candidate;
-
-                // Heuristic: hasMethod + invoke look executable
-                IntPtr
-                    hasMethod = Marshal.ReadIntPtr(candidate,
-                        16); // structVersion(4) + allocate(4) + deallocate(4) + invalidate(4)
-                IntPtr invoke = Marshal.ReadIntPtr(candidate, 20);
-                if (IsExecutablePointer(hasMethod) && IsExecutablePointer(invoke))
+                for (int i = 0; i < 4; i++)
                 {
-                    Logger.Verbose($"TryFindClassPtr: heuristic match at 0x{candidate.ToString("x")}");
-                    return candidate;
-                }
+                    IntPtr candidate = Marshal.ReadIntPtr(ptr, i * IntPtr.Size);
+                    if (!IsReadablePointer(candidate)) continue;
 
-                IntPtr nested = TryFindClassPtrInternal(candidate, depth + 1);
-                if (nested != IntPtr.Zero)
-                    return nested;
+                    int version = Marshal.ReadInt32(candidate);
+                    Logger.Verbose(
+                        $"TryFindClassPtr: depth={depth}, offset={i * IntPtr.Size}, candidate=0x{candidate.ToString("x")}, version={version}");
+
+                    // Normal NPClass path
+                    if (version == 3 || version == 2)
+                        return candidate;
+
+                    // Heuristic: hasMethod + invoke look executable
+                    IntPtr
+                        hasMethod = Marshal.ReadIntPtr(candidate,
+                            16); // structVersion(4) + allocate(4) + deallocate(4) + invalidate(4)
+                    IntPtr invoke = Marshal.ReadIntPtr(candidate, 20);
+                    if (IsExecutablePointer(hasMethod) && IsExecutablePointer(invoke))
+                    {
+                        Logger.Verbose($"TryFindClassPtr: heuristic match at 0x{candidate.ToString("x")}");
+                        return candidate;
+                    }
+
+                    IntPtr nested = TryFindClassPtrInternal(candidate, depth + 1);
+                    if (nested != IntPtr.Zero)
+                        return nested;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"TryFindClassPtrInternal threw at depth={depth}, ptr=0x{ptr.ToString("x")}: {ex}");
             }
 
             return IntPtr.Zero;
@@ -1339,26 +1462,33 @@ namespace ffrunner
                 Logger.Log($"InitializeScriptableObject: reading NPObject failed: {ex}");
             }
 
-            // Fallback: heuristics (in case the pointer isn't a direct NPObject*)
-            if (s_scriptableClassPtr == IntPtr.Zero)
-                s_scriptableClassPtr = TryFindClassPtr(scriptable);
-
-            // Fallback: maybe we got a pointer-to-pointer
-            if (s_scriptableClassPtr == IntPtr.Zero)
+            try
             {
-                IntPtr deref = Marshal.ReadIntPtr(scriptable);
-                Logger.Log($"InitializeScriptableObject: deref=0x{deref:x}");
-                if (IsReadablePointer(deref))
-                    s_scriptableClassPtr = TryFindClassPtr(deref);
-            }
+                // Fallback: heuristics (in case the pointer isn't a direct NPObject*)
+                if (s_scriptableClassPtr == IntPtr.Zero)
+                    s_scriptableClassPtr = TryFindClassPtr(scriptable);
 
-            if (s_scriptableClassPtr == IntPtr.Zero)
+                // Fallback: maybe we got a pointer-to-pointer
+                if (s_scriptableClassPtr == IntPtr.Zero)
+                {
+                    IntPtr deref = Marshal.ReadIntPtr(scriptable);
+                    Logger.Log($"InitializeScriptableObject: deref=0x{deref:x}");
+                    if (IsReadablePointer(deref))
+                        s_scriptableClassPtr = TryFindClassPtr(deref);
+                }
+
+                if (s_scriptableClassPtr == IntPtr.Zero)
+                {
+                    Logger.Log("InitializeScriptableObject: could not resolve NPClass");
+                    return;
+                }
+
+                Logger.Log($"InitializeScriptableObject: classPtr=0x{s_scriptableClassPtr.ToString("x")}");
+            }
+            catch (Exception ex)
             {
-                Logger.Log("InitializeScriptableObject: could not resolve NPClass");
-                return;
+                Logger.Log($"InitializeScriptableObject: resolving NPClass failed: {ex}");
             }
-
-            Logger.Log($"InitializeScriptableObject: classPtr=0x{s_scriptableClassPtr.ToString("x")}");
         }
     }
 }
