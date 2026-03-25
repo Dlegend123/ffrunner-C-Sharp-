@@ -252,6 +252,30 @@ namespace ffrunner
             Logger.Log("NPP_DestroyStub called");
             return 0; // NPERR_NO_ERROR
         }
+        public static IntPtr NPN_CreateObject(IntPtr npp, IntPtr aClass)
+        {
+            Logger.Log($"NPN_CreateObject called npp=0x{npp:x}, class=0x{aClass:x}");
+
+            // ✅ If Unity is asking for the scriptable NPObject, return the persistent one
+            if (aClass == s_browserClassPtr && s_browserObjectPtr != IntPtr.Zero)
+            {
+                Logger.Log("Returning persistent browser NPObject");
+                return s_browserObjectPtr;
+            }
+
+            // Otherwise allocate a new NPObject
+            var npobj = new NPObject { _class = aClass, referenceCount = 1 };
+            IntPtr p = Marshal.AllocHGlobal(Marshal.SizeOf<NPObject>());
+            Marshal.StructureToPtr(npobj, p, false);
+
+            lock (s_allocatedObjectPtrs)
+            {
+                s_allocatedObjectPtrs.Add(p);
+            }
+
+            return p;
+        }
+
 
         // Fill browser NPClass methods and create unmanaged NPClass/NPObject
         public static void FillBrowserFuncs(ref NPClass clazz)
@@ -675,39 +699,9 @@ namespace ffrunner
                 });
             funcs.getproperty = Marshal.GetFunctionPointerForDelegate(getPropertyStub);
 
-           // NPN_CreateObjectProc
-           var createObj = pin<NPAPIProcs.NPN_CreateObjectDelegate>((IntPtr nppPtr, IntPtr classPtr) =>
-           {
-               try
-               {
-                   Logger.Log($"NPN_CreateObject called npp=0x{nppPtr:x}, class=0x{classPtr:x}");
-
-                   // If Unity is asking for the scriptable NPObject, return the persistent one
-                   if (classPtr == s_browserClassPtr)
-                   {
-                       Logger.Log("Returning persistent browser NPObject");
-                       return s_browserObjectPtr;
-                   }
-
-                   // Otherwise allocate a new NPObject
-                   var npobj = new NPObject { _class = classPtr, referenceCount = 1 };
-                   IntPtr p = Marshal.AllocHGlobal(Marshal.SizeOf<NPObject>());
-                   Marshal.StructureToPtr(npobj, p, false);
-
-                   lock (s_allocatedObjectPtrs)
-                   {
-                       s_allocatedObjectPtrs.Add(p);
-                   }
-
-                   return p;
-               }
-               catch (Exception ex)
-               {
-                   Logger.Log($"NPN_CreateObject threw: {ex}");
-                   return IntPtr.Zero;
-               }
-           });
-            funcs.createobject = Marshal.GetFunctionPointerForDelegate(createObj);
+            // NPN_CreateObjectProc
+            funcs.createobject = Marshal.GetFunctionPointerForDelegate(
+                PinDelegate<NPN_CreateObjectDelegate>(NPN_CreateObject));
 
             // NPN_RetainObjectProc
             var retainObj = pin<NPAPIProcs.NPN_RetainObjectDelegate>((IntPtr objPtr) =>

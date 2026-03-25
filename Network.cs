@@ -143,47 +143,6 @@ public static class Network
         Logger.Verbose(
             $"Network.HandleIoProgress enter requestId={req.Id}, url='{req.Url}', completed={req.Completed}, done={req.Done}, failed={req.Failed}, reason={req.DoneReason}, writeSize={req.WriteSize}, writePtr={req.WritePtr}, bytesWritten={req.BytesWritten}");
 
-        // --- Failure handling ---
-        if (req.Failed && !req.Completed)
-        {
-            if (req.StreamPtr == IntPtr.Zero)
-            {
-                req.UrlPtr = StringToUtf8(req.Url);
-                req.MimeTypePtr = StringToUtf8(GetMimeType(req.Url));
-
-                var streamEmu = new NPStream
-                {
-                    pdata = IntPtr.Zero,
-                    ndata = IntPtr.Zero,
-                    url = req.UrlPtr,
-                    end = 0,
-                    lastmodified = 0,
-                    notifyData = req.NotifyData,
-                    headers = IntPtr.Zero
-                };
-
-                req.StreamPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPStream>());
-                Marshal.StructureToPtr(streamEmu, req.StreamPtr, false);
-
-                Plugin_NewStream!(nppUnmanagedPtr, req.MimeTypePtr, req.StreamPtr, 0, out _);
-            }
-
-            Plugin_DestroyStream!(nppUnmanagedPtr, req.StreamPtr, NPRES_NETWORK_ERR);
-
-            if (req.DoNotify)
-                Plugin_UrlNotifyPtr!(nppUnmanagedPtr, req.UrlPtr, NPRES_NETWORK_ERR, req.NotifyData);
-
-            req.Source?.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            req.Source = null;
-
-            req.Completed = true;
-            CompleteRequest();
-            return;
-        }
-
-        if (req.Completed)
-            return;
-
         // --- Ensure NPStream created ---
         if (req.StreamPtr == IntPtr.Zero && !req.Failed)
         {
@@ -229,9 +188,14 @@ public static class Network
                     if (req.UnmanagedBuffer == IntPtr.Zero)
                         req.UnmanagedBuffer = Marshal.AllocHGlobal(REQUEST_BUFFER_SIZE);
 
-                    Marshal.Copy(req.Buffer, req.WritePtr, req.UnmanagedBuffer + req.WritePtr, toSend);
+                    // ✅ Always copy into start of unmanaged buffer
+                    Marshal.Copy(req.Buffer, req.WritePtr, req.UnmanagedBuffer, toSend);
 
-                    var written = Plugin_Write!(nppUnmanagedPtr, req.StreamPtr, req.BytesWritten, toSend, req.UnmanagedBuffer + req.WritePtr);
+                    // ✅ Pass unmanaged buffer directly, not offset
+                    var written = Plugin_Write!(nppUnmanagedPtr, req.StreamPtr,
+                                                req.BytesWritten, toSend,
+                                                req.UnmanagedBuffer);
+
                     req.WritePtr += written;
                     req.BytesWritten += written;
                 }
@@ -247,7 +211,7 @@ public static class Network
         bytesAvailable = req.WriteSize - req.WritePtr;
         var forceManifestClose = req.Url.Contains("Manifest.resourceFile") && req.Done;
 
-        if (req.Failed || (req.Done && bytesAvailable == 0))
+        if (req.Failed || (req.Done && bytesAvailable == 0) || forceManifestClose)
         {
             Plugin_DestroyStream!(nppUnmanagedPtr, req.StreamPtr, req.DoneReason);
 

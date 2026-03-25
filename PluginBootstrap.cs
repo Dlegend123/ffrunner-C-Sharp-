@@ -98,7 +98,7 @@ namespace ffrunner
                 pluginFuncs = new NPPluginFuncs
                 {
                     size = (ushort)Marshal.SizeOf<NPPluginFuncs>(),
-                    version = NP_VERSION
+                    version = 17
                 };
                 NP_GetEntryPoints(ref pluginFuncs);
 
