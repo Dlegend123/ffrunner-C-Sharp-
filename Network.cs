@@ -376,7 +376,7 @@ public static class Network
         if (cts == null)
             throw new InvalidOperationException("Network request processing is not initialized.");
 
-        Task.Run(() => ProcessRequestAsync(req, cts.Token), cts.Token);
+        Task.Run(() => ProcessRequestAsync(req, cts.Token), cts.Token).ConfigureAwait(false);
     }
 
     private static void EnsureWorker()

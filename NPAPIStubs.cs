@@ -256,14 +256,13 @@ namespace ffrunner
         {
             Logger.Log($"NPN_CreateObject called npp=0x{npp:x}, class=0x{aClass:x}");
 
-            // ✅ If Unity is asking for the scriptable NPObject, return the persistent one
-            if (aClass == s_browserClassPtr && s_browserObjectPtr != IntPtr.Zero)
+            if (s_browserObjectPtr != IntPtr.Zero)
             {
                 Logger.Log("Returning persistent browser NPObject");
                 return s_browserObjectPtr;
             }
 
-            // Otherwise allocate a new NPObject
+            // Fallback: allocate a new NPObject
             var npobj = new NPObject { _class = aClass, referenceCount = 1 };
             IntPtr p = Marshal.AllocHGlobal(Marshal.SizeOf<NPObject>());
             Marshal.StructureToPtr(npobj, p, false);
@@ -275,6 +274,7 @@ namespace ffrunner
 
             return p;
         }
+
 
 
         // Fill browser NPClass methods and create unmanaged NPClass/NPObject
