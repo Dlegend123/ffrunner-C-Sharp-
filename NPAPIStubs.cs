@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
+using static ffrunner.NPAPIProcs;
 using static ffrunner.Structs;
 using NPClass = ffrunner.Structs.NPClass;
 using NPObject = ffrunner.Structs.NPObject;
@@ -244,7 +245,87 @@ namespace ffrunner
             Logger.Log($"SetBrowserWindowHandle hwnd=0x{hwnd.ToString("x")}");
             s_browserWindowHandle = hwnd;
         }
-        
+
+        public static void FillPluginFuncs(ref NPPluginFuncs funcs)
+        {
+            //funcs.getvalue = Marshal.GetFunctionPointerForDelegate(PinDelegate<NPP_GetValue_Unmanaged_Cdecl>(NPP_GetValueStub));
+            //funcs.destroy = Marshal.GetFunctionPointerForDelegate(
+            //    PinDelegate<NPP_Destroy_Unmanaged_Cdecl>(NPP_DestroyStub));
+
+            //funcs.setwindow = Marshal.GetFunctionPointerForDelegate(
+            //    PinDelegate<NPP_SetWindow_Unmanaged_Cdecl>(NPP_SetWindowStub));
+
+            //funcs.newstream = Marshal.GetFunctionPointerForDelegate(
+            //    PinDelegate<NPP_NewStream_Unmanaged_Cdecl>(NPP_NewStreamStub));
+
+            //funcs.destroystream = Marshal.GetFunctionPointerForDelegate(
+            //    PinDelegate<NPP_DestroyStream_Unmanaged_Cdecl>(NPP_DestroyStreamStub));
+
+            //funcs.writeready = Marshal.GetFunctionPointerForDelegate(
+            //    PinDelegate<NPP_WriteReady_Unmanaged_Cdecl>(NPP_WriteReadyStub));
+
+            //funcs.write = Marshal.GetFunctionPointerForDelegate(
+            //    PinDelegate<NPP_Write_Unmanaged_Cdecl>(NPP_WriteStub));
+
+        }
+        public static short NPP_DestroyStub(IntPtr instance, IntPtr saved)
+        {
+            Logger.Log("NPP_DestroyStub called");
+            return 0; // NPERR_NO_ERROR
+        }
+
+        public static short NPP_SetWindowStub(IntPtr instance, ref NPWindow window)
+        {
+            Logger.Log($"NPP_SetWindowStub hwnd=0x{window.window:x}, width={window.width}, height={window.height}");
+            return 0;
+        }
+
+        public static short NPP_NewStreamStub(IntPtr instance, IntPtr type, IntPtr stream, int seekable, out ushort stype)
+        {
+            Logger.Log("NPP_NewStreamStub called");
+            stype = 1; // NP_NORMAL
+            return 0;  // NPERR_NO_ERROR
+        }
+
+        public static short NPP_DestroyStreamStub(IntPtr instance, IntPtr stream, short reason)
+        {
+            Logger.Log($"NPP_DestroyStreamStub called reason={reason}");
+            return 0;
+        }
+
+        public static int NPP_WriteReadyStub(IntPtr instance, IntPtr stream)
+        {
+            Logger.Log("NPP_WriteReadyStub called");
+            return 0xFFFF; // accept all
+        }
+
+        public static int NPP_WriteStub(IntPtr instance, IntPtr stream, int offset, int len, IntPtr buffer)
+        {
+            Logger.Log($"NPP_WriteStub called len={len}");
+            return len;
+        }
+
+
+        public static short NPP_GetValueStub(IntPtr instance, int variable, ref IntPtr value)
+        {
+            const int NPPVpluginScriptableNPObject = 15;
+
+            if (variable == NPPVpluginScriptableNPObject)
+            {
+                // Use browser’s NPN_CreateObject to create NPObject with your NPClass
+                var createObject = Marshal.GetDelegateForFunctionPointer<NPN_CreateObjectDelegate>(
+                    PluginBootstrap.NetscapeFuncs.createobject);
+
+                value = createObject(instance, s_browserClassPtr);
+
+                Logger.Log($"NPP_GetValueStub returned NPObject=0x{value.ToString("x")}");
+                return 0; // NPERR_NO_ERROR
+            }
+
+            Logger.Log($"NPP_GetValueStub unhandled variable={variable}");
+            return 1; // NPERR_GENERIC_ERROR
+        }
+
         // Fill browser NPClass methods and create unmanaged NPClass/NPObject
         public static void FillBrowserFuncs(ref NPClass clazz)
         {
@@ -393,9 +474,19 @@ namespace ffrunner
             clazz.enumerate = Marshal.GetFunctionPointerForDelegate(enumerateDel);
             clazz.construct = Marshal.GetFunctionPointerForDelegate(constructDel);
 
-            // Allocate/publish native NPClass and browser NPObject (like ffrunner.c)
+            // Allocate native NPClass
             s_browserClassPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPClass>());
             Marshal.StructureToPtr(clazz, s_browserClassPtr, false);
+
+            // ✅ Allocate and publish a persistent browser NPObject
+            browserObject = new NPObject
+            {
+                _class = s_browserClassPtr,   // assign NPClass pointer
+                referenceCount = 1,
+            };
+
+            s_browserObjectPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPObject>());
+            Marshal.StructureToPtr(browserObject, s_browserObjectPtr, false);
         }
 
         public static void InitPluginDelegates(NPPluginFuncs funcs)

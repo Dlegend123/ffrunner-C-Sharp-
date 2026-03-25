@@ -103,7 +103,7 @@ namespace ffrunner
                 NP_GetEntryPoints(ref pluginFuncs);
 
                 
-                NPAPIStubs.FillBrowserFuncs(ref BrowserClass);
+               
 
                 App.Args.AssetUrl = @"C:\Users\Mark Morrison\Desktop\OpenFusion\OpenFusionLauncher\offline_cache\6543a2bb-d154-4087-b9ee-3c8aa778580a\";
                 App.Args.MainPathOrAddress = @"C:\Users\Mark Morrison\Desktop\OpenFusion\OpenFusionLauncher\offline_cache\6543a2bb-d154-4087-b9ee-3c8aa778580a\main.unity3d";
@@ -132,6 +132,7 @@ namespace ffrunner
                 };
                 
                 App.NormalizeLocalPaths(App.Args);
+                FillPluginFuncs(ref pluginFuncs);
                 InitPluginDelegates(pluginFuncs);
                 Network.InitNetwork(App.Args.MainPathOrAddress ?? string.Empty);
 
@@ -192,14 +193,14 @@ namespace ffrunner
                 if (newpRet != 0)
                     throw new Exception($"NPP_New returned error code: {newpRet}");
                 Logger.Log($"NPP_New returned {newpRet}");
-
+                
                 // Setup NPWindow and call setwindow using unmanaged pointer-based delegate
                 MainWindow.UpdateNPWindowFromWpfWindow();
 
                 // Get NPN_CreateObject from NetscapeFuncs
                 var createObject = Marshal.GetDelegateForFunctionPointer<NPN_CreateObjectDelegate>(NetscapeFuncs.createobject);
+                NPAPIStubs.FillBrowserFuncs(ref BrowserClass);
 
-                
                 // Call into browser to create NPObject
                 s_browserObjectPtr = createObject(nppUnmanagedPtr, s_browserClassPtr);
 

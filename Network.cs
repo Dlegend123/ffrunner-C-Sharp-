@@ -165,7 +165,7 @@ public static class Network
                 req.StreamPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPStream>());
                 Marshal.StructureToPtr(streamEmu, req.StreamPtr, false);
 
-                Plugin_NewStream!(nppUnmanagedPtr, req.MimeTypePtr, req.StreamPtr, false, out _);
+                Plugin_NewStream!(nppUnmanagedPtr, req.MimeTypePtr, req.StreamPtr, 0, out _);
             }
 
             Plugin_DestroyStream!(nppUnmanagedPtr, req.StreamPtr, NPRES_NETWORK_ERR);
@@ -204,7 +204,7 @@ public static class Network
             req.StreamPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPStream>());
             Marshal.StructureToPtr(streamEmu, req.StreamPtr, false);
 
-            int newStreamRet = Plugin_NewStream!(nppUnmanagedPtr, req.MimeTypePtr, req.StreamPtr, false, out var stype);
+            int newStreamRet = Plugin_NewStream!(nppUnmanagedPtr, req.MimeTypePtr, req.StreamPtr, 0, out var stype);
             req.StreamType = stype;
 
             if (newStreamRet != 0)
@@ -973,7 +973,7 @@ public static class Network
             req.StreamPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPStream>());
             Marshal.StructureToPtr(streamEmu, req.StreamPtr, false);
 
-            Plugin_NewStream!(nppUnmanagedPtr, req.MimeTypePtr, req.StreamPtr, false, out _);
+            Plugin_NewStream!(nppUnmanagedPtr, req.MimeTypePtr, req.StreamPtr, 0, out _);
         }
 
         Plugin_DestroyStream!(nppUnmanagedPtr, req.StreamPtr, NPRES_NETWORK_ERR);
