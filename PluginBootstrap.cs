@@ -45,6 +45,7 @@ namespace ffrunner
         public static IntPtr mimePtr = IntPtr.Zero;
         public static IntPtr s_savedDataPtr = IntPtr.Zero;
         public static IntPtr s_savedDataPtrPtr = IntPtr.Zero;
+        public const ushort NP_VERSION = 27; // or whatever NPAPI version Unity requires
 
         // Helper: allocate unmanaged null-terminated UTF8 string
         public static IntPtr StringToUtf8(string str)
@@ -71,7 +72,7 @@ namespace ffrunner
                 Network.InitializeWindow(hwnd);
 
                 SetBrowserWindowHandle(hwnd);
-
+                ValidateStructSizes();
                 // Resolve core NP exports (raw function pointers)
                 var pNP_GetEntryPoints = GetProcAddress(App.NpUnityDll, "NP_GetEntryPoints");
                 var pNP_Initialize = GetProcAddress(App.NpUnityDll, "NP_Initialize");
@@ -84,9 +85,12 @@ namespace ffrunner
                 NP_Initialize(ref App.NetscapeFuncs);
                 NP_GetEntryPoints = Marshal.GetDelegateForFunctionPointer<NP_GetEntryPointsDelegate>(pNP_GetEntryPoints);
                 NP_Shutdown = Marshal.GetDelegateForFunctionPointer<NP_ShutdownDelegate>(pNP_Shutdown);
+                pluginFuncs = new NPPluginFuncs
+                {
+                    size = (ushort)Marshal.SizeOf<NPPluginFuncs>(),
+                    version = NP_VERSION
+                };
                 NP_GetEntryPoints(ref pluginFuncs);
-                pluginFuncs.size = 0;
-                pluginFuncs.version = 17;
 
                 var launcherRoot = Environment.GetEnvironmentVariable("UNITY_HOME_DIR")
                                    ?? AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar,
@@ -214,8 +218,18 @@ namespace ffrunner
             }
         }
 
-       
-       
+        private static void ValidateStructSizes()
+        {
+            int sizeFuncs = Marshal.SizeOf<NPPluginFuncs>();
+            int sizeClass = Marshal.SizeOf<NPClass>();
+
+            Logger.Log($"NPPluginFuncs size={sizeFuncs}, NPClass size={sizeClass}");
+
+            // Optional: throw if mismatch with expected native sizes
+            if (sizeFuncs != 52) // adjust to actual sizeof(NPPluginFuncs) in C
+                throw new InvalidOperationException("NPPluginFuncs size mismatch");
+        }
+
 
         #region Win32 Imports
         [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);

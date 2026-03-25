@@ -234,21 +234,6 @@ public static class Network
                     var written = Plugin_Write!(nppUnmanagedPtr, req.StreamPtr, req.BytesWritten, toSend, req.UnmanagedBuffer + req.WritePtr);
                     req.WritePtr += written;
                     req.BytesWritten += written;
-
-                    // 🔥 Refill buffer immediately when consumed
-                    if (req.WritePtr >= req.WriteSize)
-                    {
-                        req.WritePtr = 0;
-                        req.WriteSize = 0;
-
-                        ProgressRequestAsync(req, CancellationToken.None).GetAwaiter().GetResult();
-
-                        if (req.WriteSize == 0)
-                        {
-                            req.Done = true;
-                            req.DoneReason = NPRES_DONE;
-                        }
-                    }
                 }
             }
             else
@@ -260,9 +245,7 @@ public static class Network
         }
 
         bytesAvailable = req.WriteSize - req.WritePtr;
-        var forceManifestClose = req.Url.Contains("Manifest.resourceFile") &&
-                                 bytesAvailable > 0 &&
-                                 req.Done;
+        var forceManifestClose = req.Url.Contains("Manifest.resourceFile") && req.Done;
 
         if (req.Failed || (req.Done && bytesAvailable == 0) || forceManifestClose)
         {
@@ -280,7 +263,6 @@ public static class Network
 
         Logger.Log($"Network.HandleIoProgress exit requestId={req.Id}, completed={req.Completed}, done={req.Done}, failed={req.Failed}, reason={req.DoneReason}, writeSize={req.WriteSize}, writePtr={req.WritePtr}, bytesWritten={req.BytesWritten}");
     }
-
 
     private static void CleanupRequest(Request req)
     {
@@ -489,7 +471,7 @@ public static class Network
 
     private static async Task ProgressRequestAsync(Request req, CancellationToken ct)
     {
-        // Only proceed if plugin has consumed previous buffer
+        // Only refill if plugin has consumed previous buffer
         if (req.WritePtr != req.WriteSize)
             return;
 
@@ -527,7 +509,6 @@ public static class Network
             FailRequest(req, "ProgressRequestAsync", ex);
         }
     }
-
 
     private static async Task InitRequestAsync(Request req, CancellationToken ct)
     {

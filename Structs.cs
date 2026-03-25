@@ -20,47 +20,41 @@ namespace ffrunner
         [StructLayout(LayoutKind.Sequential)]
         public struct NPPluginFuncs
         {
-            public ushort size;
-            public ushort version;
+            public ushort size;      // must match sizeof(NPPluginFuncs)
+            public ushort version;   // NPAPI version
 
-            public IntPtr newp;              // NPP_NewProcPtr
-            public IntPtr destroy;           // NPP_DestroyProcPtr
-            public IntPtr setwindow;         // NPP_SetWindowProcPtr
-            public IntPtr newstream;         // NPP_NewStreamProcPtr
-            public IntPtr destroystream;     // NPP_DestroyStreamProcPtr
-            public IntPtr asfile;            // NPP_StreamAsFileProcPtr
-            public IntPtr writeready;        // NPP_WriteReadyProcPtr
-            public IntPtr write;             // NPP_WriteProcPtr
-            public IntPtr print;             // NPP_PrintProcPtr
-            public IntPtr eventProc;         // NPP_HandleEventProcPtr
-            public IntPtr urlnotify;         // NPP_URLNotifyProcPtr
-            public IntPtr javaClass;         // void*
-            public IntPtr getvalue;          // NPP_GetValueProcPtr
-            public IntPtr setvalue;          // NPP_SetValueProcPtr
-            public IntPtr gotfocus;          // NPP_GotFocusPtr
-            public IntPtr lostfocus;         // NPP_LostFocusPtr
-            public IntPtr urlredirectnotify; // NPP_URLRedirectNotifyPtr
-            public IntPtr clearsitedata;     // NPP_ClearSiteDataPtr
-            public IntPtr getsiteswith;
+            public IntPtr newp;
+            public IntPtr destroy;
+            public IntPtr setwindow;
+            public IntPtr newstream;
+            public IntPtr destroystream;
+            public IntPtr streamasfile;
+            public IntPtr writeready;
+            public IntPtr write;
+            public IntPtr eventproc;
+            public IntPtr urlnotify;
+            public IntPtr getvalue;
+            public IntPtr setvalue;
         }
+
 
         [StructLayout(LayoutKind.Sequential)]
         public struct NPClass
         {
             public uint structVersion;
 
-            public IntPtr allocate;       // NPAllocateFunctionPtr
-            public IntPtr deallocate;     // NPDeallocateFunctionPtr
-            public IntPtr invalidate;     // NPInvalidateFunctionPtr
-            public IntPtr hasMethod;      // NPHasMethodFunctionPtr
-            public IntPtr invoke;         // NPInvokeFunctionPtr
-            public IntPtr invokeDefault;  // NPInvokeDefaultFunctionPtr
-            public IntPtr hasProperty;    // NPHasPropertyFunctionPtr
-            public IntPtr getProperty;    // NPGetPropertyFunctionPtr
-            public IntPtr setProperty;    // NPSetPropertyFunctionPtr
-            public IntPtr removeProperty; // NPRemovePropertyFunctionPtr
-            public IntPtr enumerate;      // NPEnumerationFunctionPtr
-            public IntPtr construct;      // NPConstructFunctionPtr
+            public IntPtr allocate;
+            public IntPtr deallocate;
+            public IntPtr invalidate;
+            public IntPtr hasMethod;
+            public IntPtr invoke;
+            public IntPtr invokeDefault;
+            public IntPtr hasProperty;
+            public IntPtr getProperty;
+            public IntPtr setProperty;
+            public IntPtr removeProperty;
+            public IntPtr enumerate;
+            public IntPtr construct;
         }
 
 
