@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "ffrunner": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "FFRUNNER_PAUSE_NETWORK_ON_START": "1"
+      },
+      "nativeDebugging": true
+    }
+  }
+}
