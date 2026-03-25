@@ -102,9 +102,6 @@ namespace ffrunner
                 };
                 NP_GetEntryPoints(ref pluginFuncs);
 
-                
-               
-
                 App.Args.AssetUrl = @"C:\Users\Mark Morrison\Desktop\OpenFusion\OpenFusionLauncher\offline_cache\6543a2bb-d154-4087-b9ee-3c8aa778580a\";
                 App.Args.MainPathOrAddress = @"C:\Users\Mark Morrison\Desktop\OpenFusion\OpenFusionLauncher\offline_cache\6543a2bb-d154-4087-b9ee-3c8aa778580a\main.unity3d";
                 App.Args.ServerAddress = "127.0.0.1:8023";

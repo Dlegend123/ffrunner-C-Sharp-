@@ -737,29 +737,19 @@ public static class Network
 
     private static bool TryGetInMemoryContent(string url, out byte[] content)
     {
-        if (string.Equals(url, "loginInfo.php", StringComparison.Ordinal))
+        var fileName = Path.GetFileName(url).ToLowerInvariant();
+
+        if (fileName == "logininfo.php")
         {
             var addr = App.Args.ServerAddress ?? string.Empty;
-            if (string.IsNullOrEmpty(addr))
-            {
-                content = Array.Empty<byte>();
-                return false;
-            }
-
             Logger.Log($"[Network] loginInfo.php -> '{addr}'");
             content = Encoding.ASCII.GetBytes(addr);
             return true;
         }
 
-        if (string.Equals(url, "assetInfo.php", StringComparison.Ordinal))
+        if (fileName == "assetinfo.php")
         {
             var assetUrl = App.Args.AssetUrl ?? string.Empty;
-            if (string.IsNullOrEmpty(assetUrl))
-            {
-                content = Array.Empty<byte>();
-                return false;
-            }
-
             Logger.Log($"[Network] assetInfo.php -> '{assetUrl}'");
             content = Encoding.ASCII.GetBytes(assetUrl);
             return true;
