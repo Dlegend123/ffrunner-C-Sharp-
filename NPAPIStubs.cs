@@ -248,6 +248,13 @@ namespace ffrunner
         // Fill browser NPClass methods and create unmanaged NPClass/NPObject
         public static void FillBrowserFuncs(ref NPClass clazz)
         {
+            clazz.structVersion = 3;
+            browserObject = new NPObject
+            {
+                _class = IntPtr.Zero, // set after class is allocated
+                referenceCount = 1,
+            };
+
             Logger.Log("FillBrowserFuncs entered");
             if (s_browserClassPtr != IntPtr.Zero)
                 return;
@@ -372,7 +379,7 @@ namespace ffrunner
                 });
 
             // Populate the managed NPClass structure with function pointers
-            clazz.structVersion = 3;
+            
             clazz.allocate = Marshal.GetFunctionPointerForDelegate(allocateDel);
             clazz.deallocate = Marshal.GetFunctionPointerForDelegate(deallocateDel);
             clazz.invalidate = Marshal.GetFunctionPointerForDelegate(invalidateDel);
@@ -391,11 +398,10 @@ namespace ffrunner
             Marshal.StructureToPtr(clazz, s_browserClassPtr, false);
 
             browserObject._class = s_browserClassPtr;
-            browserObject.referenceCount = 1;
 
             s_browserObjectPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPObject>());
             Marshal.StructureToPtr(browserObject, s_browserObjectPtr, false);
-            Logger.Log($"FillBrowserFuncs completed browserClassPtr=0x{s_browserClassPtr.ToString("x")}, browserObjectPtr=0x{s_browserObjectPtr.ToString("x")}");
+            Logger.Log($"FillBrowserFuncs completed browserClassPtr=0x{s_browserClassPtr:x}, browserObjectPtr=0x{s_browserObjectPtr:x}");
         }
 
         public static void InitPluginDelegates(NPPluginFuncs funcs)

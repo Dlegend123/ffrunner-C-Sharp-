@@ -35,7 +35,7 @@ namespace ffrunner
 
                 // Prepare persistent NPN (browser) function table and pass it to plugin
                 NetscapeFuncs = new Structs.NPNetscapeFuncs();
-
+                BrowserClass = new Structs.NPClass();
                 NPAPIStubs.InitNetscapeFuncs(ref NetscapeFuncs);
                 NPAPIStubs.FillBrowserFuncs(ref BrowserClass);
 

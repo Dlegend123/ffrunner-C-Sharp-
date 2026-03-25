@@ -38,11 +38,10 @@ namespace ffrunner
         }
 
 
-        [StructLayout(LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPClass
         {
             public uint structVersion;
-
             public IntPtr allocate;
             public IntPtr deallocate;
             public IntPtr invalidate;

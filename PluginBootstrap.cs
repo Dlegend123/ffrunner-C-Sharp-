@@ -45,7 +45,9 @@ namespace ffrunner
         public static IntPtr mimePtr = IntPtr.Zero;
         public static IntPtr s_savedDataPtr = IntPtr.Zero;
         public static IntPtr s_savedDataPtrPtr = IntPtr.Zero;
-        public const ushort NP_VERSION = 27; // or whatever NPAPI version Unity requires
+        public const ushort NP_VERSION_MAJOR = 27;
+        public const ushort NP_VERSION_MINOR = 0;
+        public const ushort NP_VERSION = (NP_VERSION_MAJOR << 8) | NP_VERSION_MINOR;
 
         // Helper: allocate unmanaged null-terminated UTF8 string
         public static IntPtr StringToUtf8(string str)
