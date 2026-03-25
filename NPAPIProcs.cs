@@ -169,5 +169,6 @@ namespace ffrunner
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate short NPN_GetValueDelegate(IntPtr instance, int variable, IntPtr valuePtr);
+
     }
 }

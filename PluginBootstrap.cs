@@ -199,14 +199,9 @@ namespace ffrunner
                 // Call into browser to create NPObject
                 s_browserObjectPtr = createObject(nppUnmanagedPtr, s_browserClassPtr);
 
-                if (s_browserObjectPtr == IntPtr.Zero)
-                    throw new InvalidOperationException("Browser failed to create NPObject");
-
                 // Keep a managed copy for logging/debugging
                 browserObject = Marshal.PtrToStructure<NPObject>(s_browserObjectPtr);
 
-                Logger.Log($"FillBrowserFuncs completed browserClassPtr=0x{s_browserClassPtr:x}, browserObjectPtr=0x{s_browserObjectPtr:x}");
-                
                 // Now call NPP_GetValue for scriptable object
                 var getvalue = Marshal.GetDelegateForFunctionPointer<NPP_GetValue_Unmanaged_Cdecl>(pluginFuncs.getvalue);
                 IntPtr scriptableObjectPtr = IntPtr.Zero;

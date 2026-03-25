@@ -59,7 +59,7 @@ public static class Network
         public IntPtr UnmanagedBuffer; // persistent unmanaged buffer for Plugin_Write
 
 		public IntPtr MimeTypePtr;
-
+        public IntPtr HeadersPtr; // track unmanaged headers
         // Track the GCHandle created in NPN_NewStream
         public GCHandle? Handle;
     }
@@ -125,29 +125,52 @@ public static class Network
         if (_sHwnd == IntPtr.Zero || SIoMsg == 0)
             throw new InvalidOperationException("Network window message plumbing is not initialized.");
 
+        // Allocate GCHandle once
         if (req.Handle is not { IsAllocated: true })
             req.Handle = GCHandle.Alloc(req, GCHandleType.Normal);
 
         Logger.Verbose(
             $"Network.PostRequestAsync requestId={req.Id}, url='{req.Url}', done={req.Done}, failed={req.Failed}, writeSize={req.WriteSize}, writePtr={req.WritePtr}, bytesWritten={req.BytesWritten}");
 
+        // Post message to plugin
         if (!PostMessage(_sHwnd, SIoMsg, IntPtr.Zero, GCHandle.ToIntPtr(req.Handle.Value)))
             throw new InvalidOperationException($"Failed to post IO message: {Marshal.GetLastWin32Error()}");
 
-        // Wait asynchronously for the plugin to consume data
-        await Task.Run(() => req.ReadyEvent.WaitOne(20000), ct);
+        // Use TaskCompletionSource instead of blocking WaitOne
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Register a callback that signals when ReadyEvent is set
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
+            {
+                if (req.ReadyEvent.WaitOne(20000))
+                    tcs.TrySetResult(true);
+                else
+                    tcs.TrySetCanceled(ct);
+            }
+            catch (Exception ex)
+            {
+                tcs.TrySetException(ex);
+            }
+        });
+
+        // Await asynchronously
+        await tcs.Task.ConfigureAwait(false);
     }
 
     public static void HandleIoProgress(Request req)
     {
-        Logger.Verbose(
-            $"Network.HandleIoProgress enter requestId={req.Id}, url='{req.Url}', completed={req.Completed}, done={req.Done}, failed={req.Failed}, reason={req.DoneReason}, writeSize={req.WriteSize}, writePtr={req.WritePtr}, bytesWritten={req.BytesWritten}");
+        if (req.Failed || req.Completed)
+            return;
 
-        // --- Ensure NPStream created ---
-        if (req.StreamPtr == IntPtr.Zero && !req.Failed)
+        // Ensure NPStream created
+        if (req.StreamPtr == IntPtr.Zero)
         {
             req.UrlPtr = StringToUtf8(req.Url);
             req.MimeTypePtr = StringToUtf8(GetMimeType(req.Url));
+            if (!string.IsNullOrEmpty(req.Source?.Headers))
+                req.HeadersPtr = StringToUtf8(req.Source.Headers!);
 
             var streamEmu = new NPStream
             {
@@ -157,7 +180,7 @@ public static class Network
                 end = req.End,
                 lastmodified = 0,
                 notifyData = req.NotifyData,
-                headers = IntPtr.Zero
+                headers = req.HeadersPtr
             };
 
             req.StreamPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPStream>());
@@ -165,67 +188,60 @@ public static class Network
 
             int newStreamRet = Plugin_NewStream!(nppUnmanagedPtr, req.MimeTypePtr, req.StreamPtr, 0, out var stype);
             req.StreamType = stype;
-
             if (newStreamRet != 0)
             {
                 req.Failed = true;
                 req.Done = true;
                 req.DoneReason = NPRES_NETWORK_ERR;
+                return;
             }
         }
 
-        // --- Write loop ---
-        var bytesAvailable = req.WriteSize - req.WritePtr;
-        if (!req.Failed && req.StreamPtr != IntPtr.Zero && bytesAvailable > 0)
+        // Write loop
+        while (!req.Failed && req.StreamPtr != IntPtr.Zero && req.WritePtr < req.WriteSize)
         {
             var ready = Plugin_WriteReady!(nppUnmanagedPtr, req.StreamPtr);
-
-            if (ready >= 0)
-            {
-                var toSend = Math.Min(Math.Max(ready, 0), bytesAvailable);
-                if (toSend > 0)
-                {
-                    if (req.UnmanagedBuffer == IntPtr.Zero)
-                        req.UnmanagedBuffer = Marshal.AllocHGlobal(REQUEST_BUFFER_SIZE);
-
-                    // ✅ Always copy into start of unmanaged buffer
-                    Marshal.Copy(req.Buffer, req.WritePtr, req.UnmanagedBuffer, toSend);
-
-                    // ✅ Pass unmanaged buffer directly, not offset
-                    var written = Plugin_Write!(nppUnmanagedPtr, req.StreamPtr,
-                                                req.BytesWritten, toSend,
-                                                req.UnmanagedBuffer);
-
-                    req.WritePtr += written;
-                    req.BytesWritten += written;
-                }
-            }
-            else
+            if (ready < 0)
             {
                 req.Failed = true;
                 req.Done = true;
                 req.DoneReason = NPRES_NETWORK_ERR;
+                break;
             }
+
+            var toSend = Math.Min(ready, req.WriteSize - req.WritePtr);
+            if (toSend <= 0) break;
+
+            if (req.UnmanagedBuffer == IntPtr.Zero)
+                req.UnmanagedBuffer = Marshal.AllocHGlobal(REQUEST_BUFFER_SIZE);
+
+            Marshal.Copy(req.Buffer, req.WritePtr, req.UnmanagedBuffer, toSend);
+            var written = Plugin_Write!(nppUnmanagedPtr, req.StreamPtr, req.BytesWritten, toSend, req.UnmanagedBuffer);
+
+            if (written <= 0)
+            {
+                req.Failed = true;
+                req.Done = true;
+                req.DoneReason = NPRES_NETWORK_ERR;
+                break;
+            }
+
+            req.WritePtr += written;
+            req.BytesWritten += written;
         }
 
-        bytesAvailable = req.WriteSize - req.WritePtr;
         var forceManifestClose = req.Url.Contains("Manifest.resourceFile") && req.Done;
-
-        if (req.Failed || (req.Done && bytesAvailable == 0) || forceManifestClose)
+        if (req.Failed || (req.Done && req.WritePtr >= req.WriteSize) || forceManifestClose)
         {
             Plugin_DestroyStream!(nppUnmanagedPtr, req.StreamPtr, req.DoneReason);
-
-            if (req.DoNotify || forceManifestClose)
-                Plugin_UrlNotifyPtr!(nppUnmanagedPtr, req.UrlPtr, req.DoneReason, req.NotifyData);
+            Plugin_UrlNotifyPtr!(nppUnmanagedPtr, req.UrlPtr, req.DoneReason, req.NotifyData);
 
             req.Source?.DisposeAsync().AsTask().GetAwaiter().GetResult();
             req.Source = null;
 
             req.Completed = true;
-            CompleteRequest();
+            CompleteRequest(); // only here
         }
-
-        Logger.Log($"Network.HandleIoProgress exit requestId={req.Id}, completed={req.Completed}, done={req.Done}, failed={req.Failed}, reason={req.DoneReason}, writeSize={req.WriteSize}, writePtr={req.WritePtr}, bytesWritten={req.BytesWritten}");
     }
 
     private static void CleanupRequest(Request req)
@@ -237,40 +253,37 @@ public static class Network
         }
         catch (Exception ex)
         {
-            //Logger.Log($"CleanupRequest source dispose failed requestId={req.Id}: {ex}");
+            Logger.Log($"[Network] CleanupRequest failed to dispose source for requestId={req.Id}: {ex}");
         }
 
-        // FIX: Only free unmanaged memory once
-        if (req.StreamPtr != IntPtr.Zero)
+        if (req.HeadersPtr != IntPtr.Zero)
         {
-            Logger.Log($"Freeing StreamPtr for requestId={req.Id}");
-            Marshal.FreeHGlobal(req.StreamPtr);
-            req.StreamPtr = IntPtr.Zero;
+            Marshal.FreeHGlobal(req.HeadersPtr);
+            req.HeadersPtr = IntPtr.Zero;
         }
+
+        // ⚠️ Do NOT free StreamPtr here — Plugin_DestroyStream already handled it
+        req.StreamPtr = IntPtr.Zero;
 
         if (req.UrlPtr != IntPtr.Zero)
         {
-            Logger.Log($"Freeing UrlPtr for requestId={req.Id}");
             Marshal.FreeHGlobal(req.UrlPtr);
             req.UrlPtr = IntPtr.Zero;
         }
 
         if (req.MimeTypePtr != IntPtr.Zero)
         {
-            Logger.Log($"Freeing MimeTypePtr for requestId={req.Id}");
             Marshal.FreeHGlobal(req.MimeTypePtr);
             req.MimeTypePtr = IntPtr.Zero;
         }
 
-        // Free persistent unmanaged buffer
         if (req.UnmanagedBuffer != IntPtr.Zero)
         {
-            Logger.Log($"Freeing UnmanagedBuffer for requestId={req.Id}");
             Marshal.FreeHGlobal(req.UnmanagedBuffer);
             req.UnmanagedBuffer = IntPtr.Zero;
         }
 
-		if (req.Handle?.IsAllocated == true)
+        if (req.Handle?.IsAllocated == true)
             req.Handle.Value.Free();
 
         req.ReadyEvent.Dispose();
@@ -288,7 +301,7 @@ public static class Network
             IsPost = false
         };
 
-        Logger.Log($"Network.RegisterGetRequest {DescribeRequest(req)}");
+       // Logger.Log($"Network.RegisterGetRequest {DescribeRequest(req)}");
         BeginRequest();
         Enqueue(req);
     }
@@ -305,7 +318,7 @@ public static class Network
             PostData = postData ?? Array.Empty<byte>()
         };
 
-        Logger.Log($"Network.RegisterPostRequest {DescribeRequest(req)}, postLen={postLen}");
+     //   Logger.Log($"Network.RegisterPostRequest {DescribeRequest(req)}, postLen={postLen}");
         BeginRequest();
         Enqueue(req);
     }
@@ -339,7 +352,7 @@ public static class Network
         }
         catch (Exception ex)
         {
-            //Logger.Log($"[Network] Shutdown failed: {ex}");
+            Logger.Log($"[Network] Shutdown failed: {ex}");
         }
     }
 
@@ -369,7 +382,7 @@ public static class Network
 
     public static void Enqueue(Request req)
     {
-        Logger.Verbose($"Network.Enqueue {DescribeRequest(req)}");
+       // Logger.Verbose($"Network.Enqueue {DescribeRequest(req)}");
         EnsureWorker();
 
         var cts = _sCts;
@@ -397,7 +410,6 @@ public static class Network
 
     private static async Task ProcessRequestAsync(Request req, CancellationToken ct)
     {
-        Logger.Log($"Network.ProcessRequestAsync start {DescribeRequest(req)}");
         try
         {
             while (!req.Done)
@@ -423,19 +435,19 @@ public static class Network
         }
         catch (Exception ex)
         {
-            //Logger.Log($"[Network] request worker crashed for requestId={req.Id}, url='{req.Url}': {ex}");
+            Logger.Log($"[Network] request worker crashed for requestId={req.Id}, url='{req.Url}': {ex}");
         }
         finally
         {
-           // CleanupRequest(req);
+            CleanupRequest(req);
             Logger.Log($"Network.ProcessRequestAsync end requestId={req.Id}, url='{req.Url}'");
         }
     }
 
-
     private static async Task ProgressRequestAsync(Request req, CancellationToken ct)
     {
-        // Only refill if plugin has consumed previous buffer
+        Logger.Log(
+            $"Network.ProgressRequestAsync requestId={req.Id}, url='{req.Url}', writeSize={req.WriteSize}, writePtr={req.WritePtr}");
         if (req.WritePtr != req.WriteSize)
             return;
 
@@ -444,6 +456,13 @@ public static class Network
 
         try
         {
+            if (req.Source?.Stream == null)
+            {
+                req.Done = true;
+                req.DoneReason = NPRES_NETWORK_ERR;
+                return;
+            }
+
             if (req.InMemoryData != null)
             {
                 var remaining = req.InMemoryData.Length - req.InMemoryOffset;
@@ -455,10 +474,10 @@ public static class Network
                     req.WriteSize = toCopy;
                 }
             }
-            else if (req.Source != null)
+            else
             {
-                var read = await req.Source.Stream.ReadAsync(req.Buffer.AsMemory(0, req.Buffer.Length), ct)
-                    ;
+                Logger.Log($"Network.ProgressRequestAsync reading from stream for requestId={req.Id}, url='{req.Url}'");
+                var read = await req.Source.Stream.ReadAsync(req.Buffer.AsMemory(0, req.Buffer.Length), ct);
                 req.WriteSize = read;
             }
 
@@ -468,11 +487,18 @@ public static class Network
                 req.DoneReason = NPRES_DONE;
             }
         }
+        catch (ObjectDisposedException)
+        {
+            Logger.Log($"[Network] ProgressRequestAsync stream disposed for requestId={req.Id}, url='{req.Url}'");
+            req.Done = true;
+            req.DoneReason = NPRES_NETWORK_ERR;
+        }
         catch (Exception ex)
         {
             FailRequest(req, "ProgressRequestAsync", ex);
         }
     }
+
 
     private static async Task InitRequestAsync(Request req, CancellationToken ct)
     {
@@ -480,13 +506,15 @@ public static class Network
 
         try
         {
-            // 1. In-memory source
+            // 1. In-memory pseudo files
             if (TryGetInMemoryContent(req.EffectiveUrl, out var inMemory))
             {
                 req.InMemoryData = inMemory;
                 req.InMemoryOffset = 0;
                 req.End = (uint)Math.Min(inMemory.Length, uint.MaxValue);
                 req.Initialized = true;
+                req.Done = false;
+                req.Failed = false;
                 return;
             }
 
@@ -520,6 +548,9 @@ public static class Network
                     else
                     {
                         FailRequest(req, "InitRequestAsync", new FileNotFoundException(req.Url));
+                        req.Done = true;
+                        req.DoneReason = NPRES_NETWORK_ERR;
+                        req.Completed = true;
                         return;
                     }
                 }
@@ -557,6 +588,9 @@ public static class Network
         catch (Exception ex)
         {
             FailRequest(req, "InitRequestAsync", ex);
+            req.Done = true;
+            req.DoneReason = NPRES_NETWORK_ERR;
+            req.Completed = true;
             return;
         }
         finally
@@ -695,24 +729,34 @@ public static class Network
 
     private static string GetRedirectedUrl(string url)
     {
+        Logger.Log($"Network.GetRedirectedUrl input='{url}'");
         var requestUrl = url ?? string.Empty;
 
         if (!App.Args.UseEndpointLoadingScreen)
+        {
+            Logger.Log("Network.GetRedirectedUrl endpoint loading screen disabled, no redirection applied");
             return requestUrl;
+        }
+            
 
         var endpointHost = App.Args.EndpointHost ?? string.Empty;
         if (string.IsNullOrEmpty(endpointHost))
+        {
+            Logger.Log("Network.GetRedirectedUrl no endpoint host configured, no redirection applied");
             return requestUrl;
+        }
 
         const string prefix = "assets/img";
         if (requestUrl.StartsWith(prefix, StringComparison.Ordinal))
         {
+            Logger.Log($"Network.GetRedirectedUrl applying redirection for '{requestUrl}' with endpoint '{endpointHost}'");
             var rest = requestUrl.Substring(prefix.Length);
             var redirected = $"https://{endpointHost}/launcher/loading{rest}";
             Logger.Log($"Network.GetRedirectedUrl redirected '{url}' -> '{redirected}'");
             return redirected;
         }
 
+        Logger.Log($"Network.GetRedirectedUrl no matching redirection rule for '{requestUrl}', no redirection applied");
         return requestUrl;
     }
 
@@ -743,7 +787,7 @@ public static class Network
         {
             var addr = App.Args.ServerAddress ?? string.Empty;
             Logger.Log($"[Network] loginInfo.php -> '{addr}'");
-            content = Encoding.ASCII.GetBytes(addr);
+            content = Encoding.ASCII.GetBytes(addr + "\n"); // match requests.c: newline terminated
             return true;
         }
 
@@ -751,7 +795,7 @@ public static class Network
         {
             var assetUrl = App.Args.AssetUrl ?? string.Empty;
             Logger.Log($"[Network] assetInfo.php -> '{assetUrl}'");
-            content = Encoding.ASCII.GetBytes(assetUrl);
+            content = Encoding.ASCII.GetBytes(assetUrl + "\n"); // newline terminated
             return true;
         }
 
@@ -795,8 +839,9 @@ public static class Network
 
     private static string DescribeRequest(in Request req)
     {
+        long notifyVal = req.NotifyData.ToInt64();
         return
-            $"requestId={req.Id}, url='{req.Url}', doNotify={req.DoNotify}, notifyData=0x{req.NotifyData.ToString("x")}, isPost={req.IsPost}";
+            $"requestId={req.Id}, url='{req.Url}', doNotify={req.DoNotify}, notifyData=0x{notifyVal:x}, isPost={req.IsPost}";
     }
 
     private static bool TryInitFromCache(Request req)
@@ -849,8 +894,7 @@ public static class Network
                 Content = content
             };
 
-            var resp = await SHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
-                ;
+            var resp = await SHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
 
             // FIX: Only throw for non-success status code
             if (!resp.IsSuccessStatusCode)

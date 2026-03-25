@@ -546,9 +546,6 @@ namespace ffrunner
         public static void InitNetscapeFuncs(ref NPNetscapeFuncs funcs)
         {
             Logger.Log($"InitNetscapeFuncs entered size={funcs.size}, version={funcs.version}");
-            // IMPORTANT: mimic `ffrunner.c` exactly.
-            // The native runner only provides a small subset of NPN_* callbacks.
-            // Keeping the rest NULL avoids Unity calling partially-implemented stubs.
 
             // Helper to pin and return delegates
             T pin<T>(T d) where T : Delegate
@@ -574,6 +571,8 @@ namespace ffrunner
                     IntPtr windowPtr, uint len, IntPtr buf,
                     [MarshalAs(UnmanagedType.I1)] bool file) =>
                 {
+                    Logger.Log(
+                        $"NPN_PostURL called urlPtr=0x{urlPtr.ToString("x")}, windowPtr=0x{windowPtr.ToString("x")}, len={len}, buf=0x{buf.ToString("x")}, file={file}");
                     string url = ReadAnsiString(urlPtr);
                     string window = ReadAnsiString(windowPtr);
                     Logger.Log(
@@ -609,6 +608,7 @@ namespace ffrunner
             var geturlNotifyDel = pin<NPAPIProcs.NPN_GetURLNotifyDelegate>(
                 (IntPtr instance, IntPtr urlPtr, IntPtr windowPtr, IntPtr notifyData) =>
                 {
+                    Logger.Log($"NPN_GetURLNotify called notifyData=0x{notifyData.ToString("x")}");
                     string url = ReadAnsiString(urlPtr);
                     string window = ReadAnsiString(windowPtr);
                     Logger.Log(
@@ -717,6 +717,8 @@ namespace ffrunner
             var getPropertyStub = pin<NPAPIProcs.NPN_GetPropertyDelegate>(
                 (IntPtr npp, IntPtr obj, IntPtr propertyName, IntPtr resultPtr) =>
                 {
+                    Logger.Log(
+                        $"NPN_GetProperty obj={DescribeNPObjectRefCount(obj)}, property={DescribeNPIdentifier(propertyName)}, resultPtr=0x{resultPtr.ToString("x")}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
                     if (resultPtr != IntPtr.Zero)
                     {
                         WriteVoidVariant(resultPtr);
@@ -777,6 +779,8 @@ namespace ffrunner
                 {
                     try
                     {
+                        Logger.Log(
+                            $"NPN_Evaluate obj={DescribeNPObjectRefCount(obj)}, scriptPtr=0x{scriptPtr:x}, resultPtr=0x{resultPtr:x}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
                         string code = string.Empty;
                         if (scriptPtr != IntPtr.Zero && IsReadablePointer(scriptPtr))
                         {
@@ -952,6 +956,7 @@ namespace ffrunner
         {
             try
             {
+                Logger.Log($"TryGetArgValue trying names: {string.Join(", ", names)}");
                 var argObj = App.Args;
                 var t = argObj.GetType();
                 foreach (var n in names)
@@ -972,6 +977,8 @@ namespace ffrunner
 
         private static void UnitySendMessage(string targetClass, string msg, NPVariant val)
         {
+            Logger.Log(
+                $"UnitySendMessage called tid={Environment.CurrentManagedThreadId}, target='{targetClass}', msg='{msg}', val={DescribeNPVariant(val)}");
             var dispatcher = Application.Current?.Dispatcher;
             if (dispatcher != null)
             {
@@ -994,6 +1001,8 @@ namespace ffrunner
         {
             try
             {
+                Logger.Log(
+                    $"UnitySendMessageInternal entered tid={Environment.CurrentManagedThreadId}, target='{targetClass}', msg='{msg}', val={DescribeNPVariant(val)}");
                 IntPtr scriptable = PluginBootstrap.scriptableObject;
                 if (scriptable == IntPtr.Zero || !IsReadablePointer(scriptable))
                 {
@@ -1158,6 +1167,7 @@ namespace ffrunner
 
         private static string ReadAnsiString(IntPtr ptr, int maxBytes = 4096)
         {
+            Logger.Log($"ReadAnsiString: ptr=0x{ptr.ToString("x")}, maxBytes={maxBytes}");
             if (ptr == IntPtr.Zero || !IsReadablePointer(ptr))
                 return string.Empty;
 
@@ -1180,6 +1190,7 @@ namespace ffrunner
 
         private static bool IsReadablePointer(IntPtr ptr)
         {
+            Logger.Log($"IsReadablePointer: ptr=0x{ptr.ToString("x")}");
             if (ptr == IntPtr.Zero) return false;
             if (VirtualQuery(ptr, out var mbi, (IntPtr)Marshal.SizeOf<MEMORY_BASIC_INFORMATION>()) == IntPtr.Zero)
                 return false;
@@ -1197,6 +1208,7 @@ namespace ffrunner
 
         private static bool IsExecutablePointer(IntPtr ptr)
         {
+            Logger.Log($"IsExecutablePointer checking 0x{ptr.ToString("x")}");
             if (ptr == IntPtr.Zero) return false;
             if (VirtualQuery(ptr, out var mbi, (IntPtr)Marshal.SizeOf<MEMORY_BASIC_INFORMATION>()) == IntPtr.Zero)
                 return false;
@@ -1220,6 +1232,7 @@ namespace ffrunner
 
         private static IntPtr TryFindClassPtrInternal(IntPtr ptr, int depth)
         {
+            Logger.Log($"TryFindClassPtrInternal: depth={depth}, ptr=0x{ptr.ToString("x")}");
             if (depth > 2 || !IsReadablePointer(ptr))
                 return IntPtr.Zero;
 

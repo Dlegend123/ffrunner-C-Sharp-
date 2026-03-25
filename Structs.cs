@@ -149,7 +149,7 @@ namespace ffrunner
             Window = 1,
             Drawable = 2,
         }
-
+        
         // Matches npapi.h layout: clipRect then type (type is LAST)
         [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPWindow
