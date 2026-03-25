@@ -49,6 +49,9 @@ namespace ffrunner
         public const ushort NP_VERSION_MINOR = 0;
         public const ushort NP_VERSION = (NP_VERSION_MAJOR << 8) | NP_VERSION_MINOR;
 
+        public static Structs.NPNetscapeFuncs NetscapeFuncs;
+        public static Structs.NPClass BrowserClass;
+
         // Helper: allocate unmanaged null-terminated UTF8 string
         public static IntPtr StringToUtf8(string str)
         {
@@ -68,25 +71,30 @@ namespace ffrunner
             try
             {
                 s_hwnd = hwnd;
-
-                // Environment setup
-
                 Network.InitializeWindow(hwnd);
-
                 SetBrowserWindowHandle(hwnd);
                 ValidateStructSizes();
-                // Resolve core NP exports (raw function pointers)
+
+                // Resolve NPAPI exports
                 var pNP_GetEntryPoints = GetProcAddress(App.NpUnityDll, "NP_GetEntryPoints");
                 var pNP_Initialize = GetProcAddress(App.NpUnityDll, "NP_Initialize");
                 var pNP_Shutdown = GetProcAddress(App.NpUnityDll, "NP_Shutdown");
-
                 if (pNP_GetEntryPoints == IntPtr.Zero || pNP_Initialize == IntPtr.Zero || pNP_Shutdown == IntPtr.Zero)
                     throw new Exception("Missing NPAPI exports");
 
+                NetscapeFuncs = new NPNetscapeFuncs
+                {
+                    size = (ushort)Marshal.SizeOf<NPNetscapeFuncs>(),
+                    version = NP_VERSION_MAJOR
+                };
+                BrowserClass = new NPClass();
+                NPAPIStubs.InitNetscapeFuncs(ref NetscapeFuncs);
                 NP_Initialize = Marshal.GetDelegateForFunctionPointer<NP_InitializeDelegate>(pNP_Initialize);
-                NP_Initialize(ref App.NetscapeFuncs);
+                NP_Initialize(ref NetscapeFuncs);
+
                 NP_GetEntryPoints = Marshal.GetDelegateForFunctionPointer<NP_GetEntryPointsDelegate>(pNP_GetEntryPoints);
                 NP_Shutdown = Marshal.GetDelegateForFunctionPointer<NP_ShutdownDelegate>(pNP_Shutdown);
+
                 pluginFuncs = new NPPluginFuncs
                 {
                     size = (ushort)Marshal.SizeOf<NPPluginFuncs>(),
@@ -94,20 +102,14 @@ namespace ffrunner
                 };
                 NP_GetEntryPoints(ref pluginFuncs);
 
-                var launcherRoot = Environment.GetEnvironmentVariable("UNITY_HOME_DIR")
-                                   ?? AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar,
-                                       Path.AltDirectorySeparatorChar);
-                var cacheRoot = Path.Combine(launcherRoot, "offline_cache", "6543a2bb-d154-4087-b9ee-3c8aa778580a");
-                //var mainPath = Path.Combine(cacheRoot, "main.unity3d");
-
+                
+                NPAPIStubs.FillBrowserFuncs(ref BrowserClass);
 
                 App.Args.AssetUrl = @"C:\Users\Mark Morrison\Desktop\OpenFusion\OpenFusionLauncher\offline_cache\6543a2bb-d154-4087-b9ee-3c8aa778580a\";
                 App.Args.MainPathOrAddress = @"C:\Users\Mark Morrison\Desktop\OpenFusion\OpenFusionLauncher\offline_cache\6543a2bb-d154-4087-b9ee-3c8aa778580a\main.unity3d";
                 App.Args.ServerAddress = "127.0.0.1:8023";
                 App.Args.TegId = "mlegend123";
                 App.Args.AuthId = "mlegend123";
-                Logger.Log($"Overriding launcher args from local cache root '{cacheRoot}'");
-                 App.NormalizeLocalPaths(App.Args);
 
                 // Allocate persistent unmanaged copy (with padding) BEFORE NP_Initialize
 
@@ -118,8 +120,6 @@ namespace ffrunner
                     "disableContextMenu", "textcolor", "logoimage", "progressbarimage", "progressframeimage"
                 };
 
-                Logger.Log(
-                    $"Args: main='{App.Args.MainPathOrAddress}', assetUrl='{App.Args.AssetUrl}', address='{App.Args.ServerAddress}', endpoint='{App.Args.EndpointHost}', username='{App.Args.TegId}', token={(string.IsNullOrEmpty(App.Args.AuthId) ? "(empty)" : "***")}");
                 string[] argp =
                 {
                     App.Args.MainPathOrAddress ?? "",
@@ -145,37 +145,33 @@ namespace ffrunner
                 // Allocate pointer arrays (NULL-terminated) for native plugin
                 argnUnmanaged = Marshal.AllocHGlobal(IntPtr.Size * (argnPtrs.Length + 1));
                 argpUnmanaged = Marshal.AllocHGlobal(IntPtr.Size * (argpPtrs.Length + 1));
-                for (var i = 0; i < argnPtrs.Length; i++)
-                    Marshal.WriteIntPtr(argnUnmanaged, i * IntPtr.Size, argnPtrs[i]);
+                for (int i = 0; i < argnPtrs.Length; i++) Marshal.WriteIntPtr(argnUnmanaged, i * IntPtr.Size, argnPtrs[i]);
                 Marshal.WriteIntPtr(argnUnmanaged, argnPtrs.Length * IntPtr.Size, IntPtr.Zero);
-
-                for (var i = 0; i < argpPtrs.Length; i++)
-                    Marshal.WriteIntPtr(argpUnmanaged, i * IntPtr.Size, argpPtrs[i]);
+                for (int i = 0; i < argpPtrs.Length; i++) Marshal.WriteIntPtr(argpUnmanaged, i * IntPtr.Size, argpPtrs[i]);
                 Marshal.WriteIntPtr(argpUnmanaged, argpPtrs.Length * IntPtr.Size, IntPtr.Zero);
 
-                // Allocate persistent unmanaged NPP_t storage (plugin will write instance data here)
-                nppUnmanagedPtr = Marshal.AllocHGlobal(Marshal.SizeOf<Structs.NPP_t>());
-                Marshal.StructureToPtr(new Structs.NPP_t(), nppUnmanagedPtr, false);
+                // Allocate NPP_t
+                nppUnmanagedPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPP_t>());
+                Marshal.StructureToPtr(new NPP_t(), nppUnmanagedPtr, false);
 
-                // Saved data (ephemeral)
-                var saved = new Structs.NPSavedData();
-                s_savedDataPtr = Marshal.AllocHGlobal(Marshal.SizeOf<Structs.NPSavedData>());
+                // Saved data (NPSavedData**)
+                var saved = new NPSavedData();
+                s_savedDataPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPSavedData>());
                 Marshal.StructureToPtr(saved, s_savedDataPtr, false);
                 s_savedDataPtrPtr = Marshal.AllocHGlobal(IntPtr.Size);
                 Marshal.WriteIntPtr(s_savedDataPtrPtr, s_savedDataPtr);
 
-                // Call plugin's NPP_New using pointer-based native delegate
+                // Call NPP_New
                 var newpPtr = pluginFuncs.newp;
                 if (newpPtr == IntPtr.Zero)
                     throw new Exception("pluginFuncs.newp is NULL; cannot call NPP_New.");
 
-                // Create delegate for plugin NPP_New that returns short (NPError)
                 var newpUnmanaged = Marshal.GetDelegateForFunctionPointer<NPP_New_Unmanaged_Cdecl_ShortArg>(newpPtr);
-                
-                // NPError is 16-bit -> use short
-                var newpRet = newpUnmanaged(mimePtr, nppUnmanagedPtr, 1, (short)argn.Length, argnUnmanaged,
-                    argpUnmanaged, s_savedDataPtr);
 
+                short newpRet = newpUnmanaged(mimePtr, nppUnmanagedPtr, 1,
+                    (short)argn.Length, argnUnmanaged,
+                    argpUnmanaged, s_savedDataPtrPtr);
+                
                 // Fallback: try minimal args if plugin rejects full args
                 if (newpRet != 0)
                 {
@@ -200,11 +196,29 @@ namespace ffrunner
                 // Setup NPWindow and call setwindow using unmanaged pointer-based delegate
                 MainWindow.UpdateNPWindowFromWpfWindow();
 
-                // Get scriptable object - use short NPError result
-                var getvalue =
-                    Marshal.GetDelegateForFunctionPointer<NPP_GetValue_Unmanaged_Cdecl>(pluginFuncs.getvalue);
+                // Get NPN_CreateObject from NetscapeFuncs
+                var createObject = Marshal.GetDelegateForFunctionPointer<NPN_CreateObjectDelegate>(NetscapeFuncs.createobject);
 
-                var scriptableObjectPtr = IntPtr.Zero;
+                
+                // Call into browser to create NPObject
+                s_browserObjectPtr = createObject(nppUnmanagedPtr, s_browserClassPtr);
+
+                if (s_browserObjectPtr == IntPtr.Zero)
+                    throw new InvalidOperationException("Browser failed to create NPObject");
+
+                // Keep a managed copy for logging/debugging
+                browserObject = Marshal.PtrToStructure<NPObject>(s_browserObjectPtr);
+
+                Logger.Log($"FillBrowserFuncs completed browserClassPtr=0x{s_browserClassPtr:x}, browserObjectPtr=0x{s_browserObjectPtr:x}");
+
+                // Call NPP_SetWindow
+                var setwindow = Marshal.GetDelegateForFunctionPointer<NPP_SetWindow_Unmanaged_Cdecl>(pluginFuncs.setwindow);
+                var npWindow = s_npWindow; // fill with hwnd, width, height
+                setwindow(nppUnmanagedPtr, ref npWindow);
+
+                // Now call NPP_GetValue for scriptable object
+                var getvalue = Marshal.GetDelegateForFunctionPointer<NPP_GetValue_Unmanaged_Cdecl>(pluginFuncs.getvalue);
+                IntPtr scriptableObjectPtr = IntPtr.Zero;
                 const int NPPVpluginScriptableNPObject = 15;
                 getvalue(nppUnmanagedPtr, NPPVpluginScriptableNPObject, ref scriptableObjectPtr);
 

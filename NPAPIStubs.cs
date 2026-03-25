@@ -38,8 +38,8 @@ namespace ffrunner
         public static NPObject browserObject;
 
         // Unmanaged pointers used by stubs and returned to plugin (must persist)
-        private static IntPtr s_browserClassPtr = IntPtr.Zero;
-        private static IntPtr s_browserObjectPtr = IntPtr.Zero;
+        public static IntPtr s_browserClassPtr = IntPtr.Zero;
+        public static IntPtr s_browserObjectPtr = IntPtr.Zero;
         private static string s_locationHref = string.Empty;
 
         // Identifier interning storage
@@ -396,12 +396,6 @@ namespace ffrunner
             // Allocate/publish native NPClass and browser NPObject (like ffrunner.c)
             s_browserClassPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPClass>());
             Marshal.StructureToPtr(clazz, s_browserClassPtr, false);
-
-            browserObject._class = s_browserClassPtr;
-
-            s_browserObjectPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPObject>());
-            Marshal.StructureToPtr(browserObject, s_browserObjectPtr, false);
-            Logger.Log($"FillBrowserFuncs completed browserClassPtr=0x{s_browserClassPtr:x}, browserObjectPtr=0x{s_browserObjectPtr:x}");
         }
 
         public static void InitPluginDelegates(NPPluginFuncs funcs)
@@ -492,8 +486,6 @@ namespace ffrunner
                 return d;
             }
 
-            funcs.size = (ushort)Marshal.SizeOf<NPNetscapeFuncs>();
-            funcs.version = 27;
             // NPN_GetURLProc
             var geturlDel = pin<NPAPIProcs.NPN_GetURLDelegate>((IntPtr instance, IntPtr urlPtr, IntPtr windowPtr) =>
             {

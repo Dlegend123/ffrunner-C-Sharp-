@@ -17,7 +17,7 @@ namespace ffrunner
             NPERR_GENERIC_ERROR = 1,
         }
 
-        [StructLayout(LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPPluginFuncs
         {
             public ushort size;      // must match sizeof(NPPluginFuncs)

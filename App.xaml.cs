@@ -13,8 +13,7 @@ namespace ffrunner
         private static IntPtr _sVectoredExceptionHandler = IntPtr.Zero;
         private static VectoredExceptionHandlerDelegate? _sVectoredExceptionHandlerDelegate;
         public static IntPtr NpUnityDll = IntPtr.Zero;
-        public static Structs.NPNetscapeFuncs NetscapeFuncs;
-        public static Structs.NPClass BrowserClass;
+        
         private const int SOk = 0;
         public static MainWindow? mainWindow;
         // StartPlugin follows the native ordering and keeps buffers alive for plugin lifetime.
@@ -31,13 +30,6 @@ namespace ffrunner
 
                 Logger.Log(
                     $"StartPlugin environment UNITY_HOME_DIR='{Environment.GetEnvironmentVariable("UNITY_HOME_DIR")}', CurrentDirectory='{Environment.CurrentDirectory}'");
-
-
-                // Prepare persistent NPN (browser) function table and pass it to plugin
-                NetscapeFuncs = new Structs.NPNetscapeFuncs();
-                BrowserClass = new Structs.NPClass();
-                NPAPIStubs.InitNetscapeFuncs(ref NetscapeFuncs);
-                NPAPIStubs.FillBrowserFuncs(ref BrowserClass);
 
                 // Load plugin DLL
                 NpUnityDll = LoadLibrary("npUnity3D32.dll");

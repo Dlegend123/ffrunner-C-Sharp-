@@ -21,7 +21,14 @@ namespace ffrunner
         // ---------------------------
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate short NPP_New_Unmanaged_Cdecl_ShortArg(
-            IntPtr mimeType, IntPtr instance, ushort mode, short argc, IntPtr argn, IntPtr argv, IntPtr saved);
+            IntPtr pluginType,      // const char* MIME type
+            IntPtr instance,        // NPP (pointer to NPP_t)
+            ushort mode,            // uint16_t
+            short argc,             // int16_t
+            IntPtr argn,            // char*[]
+            IntPtr argv,            // char*[]
+            IntPtr saved            // NPSavedData**
+        );
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate short NPP_Destroy_Unmanaged_Cdecl(IntPtr instance, IntPtr savedPtr);
