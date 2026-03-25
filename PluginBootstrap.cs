@@ -132,7 +132,6 @@ namespace ffrunner
                 };
                 
                 App.NormalizeLocalPaths(App.Args);
-                FillPluginFuncs(ref pluginFuncs);
                 InitPluginDelegates(pluginFuncs);
                 Network.InitNetwork(App.Args.MainPathOrAddress ?? string.Empty);
 
@@ -197,9 +196,9 @@ namespace ffrunner
                 // Setup NPWindow and call setwindow using unmanaged pointer-based delegate
                 MainWindow.UpdateNPWindowFromWpfWindow();
 
+                NPAPIStubs.FillBrowserFuncs(ref BrowserClass);
                 // Get NPN_CreateObject from NetscapeFuncs
                 var createObject = Marshal.GetDelegateForFunctionPointer<NPN_CreateObjectDelegate>(NetscapeFuncs.createobject);
-                NPAPIStubs.FillBrowserFuncs(ref BrowserClass);
 
                 // Call into browser to create NPObject
                 s_browserObjectPtr = createObject(nppUnmanagedPtr, s_browserClassPtr);

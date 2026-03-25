@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using System.Formats.Asn1;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -245,85 +246,11 @@ namespace ffrunner
             Logger.Log($"SetBrowserWindowHandle hwnd=0x{hwnd.ToString("x")}");
             s_browserWindowHandle = hwnd;
         }
-
-        public static void FillPluginFuncs(ref NPPluginFuncs funcs)
-        {
-            //funcs.getvalue = Marshal.GetFunctionPointerForDelegate(PinDelegate<NPP_GetValue_Unmanaged_Cdecl>(NPP_GetValueStub));
-            //funcs.destroy = Marshal.GetFunctionPointerForDelegate(
-            //    PinDelegate<NPP_Destroy_Unmanaged_Cdecl>(NPP_DestroyStub));
-
-            //funcs.setwindow = Marshal.GetFunctionPointerForDelegate(
-            //    PinDelegate<NPP_SetWindow_Unmanaged_Cdecl>(NPP_SetWindowStub));
-
-            //funcs.newstream = Marshal.GetFunctionPointerForDelegate(
-            //    PinDelegate<NPP_NewStream_Unmanaged_Cdecl>(NPP_NewStreamStub));
-
-            //funcs.destroystream = Marshal.GetFunctionPointerForDelegate(
-            //    PinDelegate<NPP_DestroyStream_Unmanaged_Cdecl>(NPP_DestroyStreamStub));
-
-            //funcs.writeready = Marshal.GetFunctionPointerForDelegate(
-            //    PinDelegate<NPP_WriteReady_Unmanaged_Cdecl>(NPP_WriteReadyStub));
-
-            //funcs.write = Marshal.GetFunctionPointerForDelegate(
-            //    PinDelegate<NPP_Write_Unmanaged_Cdecl>(NPP_WriteStub));
-
-        }
+        
         public static short NPP_DestroyStub(IntPtr instance, IntPtr saved)
         {
             Logger.Log("NPP_DestroyStub called");
             return 0; // NPERR_NO_ERROR
-        }
-
-        public static short NPP_SetWindowStub(IntPtr instance, ref NPWindow window)
-        {
-            Logger.Log($"NPP_SetWindowStub hwnd=0x{window.window:x}, width={window.width}, height={window.height}");
-            return 0;
-        }
-
-        public static short NPP_NewStreamStub(IntPtr instance, IntPtr type, IntPtr stream, int seekable, out ushort stype)
-        {
-            Logger.Log("NPP_NewStreamStub called");
-            stype = 1; // NP_NORMAL
-            return 0;  // NPERR_NO_ERROR
-        }
-
-        public static short NPP_DestroyStreamStub(IntPtr instance, IntPtr stream, short reason)
-        {
-            Logger.Log($"NPP_DestroyStreamStub called reason={reason}");
-            return 0;
-        }
-
-        public static int NPP_WriteReadyStub(IntPtr instance, IntPtr stream)
-        {
-            Logger.Log("NPP_WriteReadyStub called");
-            return 0xFFFF; // accept all
-        }
-
-        public static int NPP_WriteStub(IntPtr instance, IntPtr stream, int offset, int len, IntPtr buffer)
-        {
-            Logger.Log($"NPP_WriteStub called len={len}");
-            return len;
-        }
-
-
-        public static short NPP_GetValueStub(IntPtr instance, int variable, ref IntPtr value)
-        {
-            const int NPPVpluginScriptableNPObject = 15;
-
-            if (variable == NPPVpluginScriptableNPObject)
-            {
-                // Use browser’s NPN_CreateObject to create NPObject with your NPClass
-                var createObject = Marshal.GetDelegateForFunctionPointer<NPN_CreateObjectDelegate>(
-                    PluginBootstrap.NetscapeFuncs.createobject);
-
-                value = createObject(instance, s_browserClassPtr);
-
-                Logger.Log($"NPP_GetValueStub returned NPObject=0x{value.ToString("x")}");
-                return 0; // NPERR_NO_ERROR
-            }
-
-            Logger.Log($"NPP_GetValueStub unhandled variable={variable}");
-            return 1; // NPERR_GENERIC_ERROR
         }
 
         // Fill browser NPClass methods and create unmanaged NPClass/NPObject
@@ -748,52 +675,38 @@ namespace ffrunner
                 });
             funcs.getproperty = Marshal.GetFunctionPointerForDelegate(getPropertyStub);
 
-            // NPN_CreateObjectProc
-            var createObj = pin<NPAPIProcs.NPN_CreateObjectDelegate>((IntPtr nppPtr, IntPtr classPtr) =>
-            {
-                try
-                {
-                    Logger.Log($"NPN_CreateObject class=0x{classPtr.ToString("x")}");
-                    if (classPtr == IntPtr.Zero || !IsReadablePointer(classPtr))
-                        return IntPtr.Zero;
+           // NPN_CreateObjectProc
+           var createObj = pin<NPAPIProcs.NPN_CreateObjectDelegate>((IntPtr nppPtr, IntPtr classPtr) =>
+           {
+               try
+               {
+                   Logger.Log($"NPN_CreateObject called npp=0x{nppPtr:x}, class=0x{classPtr:x}");
 
-                    var cls = Marshal.PtrToStructure<NPClass>(classPtr);
+                   // If Unity is asking for the scriptable NPObject, return the persistent one
+                   if (classPtr == s_browserClassPtr)
+                   {
+                       Logger.Log("Returning persistent browser NPObject");
+                       return s_browserObjectPtr;
+                   }
 
-                    IntPtr created = IntPtr.Zero;
-                    if (cls.allocate != IntPtr.Zero && IsExecutablePointer(cls.allocate))
-                    {
-                        var allocDel =
-                            Marshal.GetDelegateForFunctionPointer<NPAPIProcs.NP_AllocateDelegate>(cls.allocate);
-                        created = allocDel(nppPtr, classPtr);
-                    }
-                    else
-                    {
-                        var o = new NPObject { _class = classPtr, referenceCount = 1u };
-                        created = Marshal.AllocHGlobal(Marshal.SizeOf<NPObject>());
-                        Marshal.StructureToPtr(o, created, false);
-                        lock (s_allocatedObjectPtrs)
-                        {
-                            s_allocatedObjectPtrs.Add(created);
-                        }
-                    }
+                   // Otherwise allocate a new NPObject
+                   var npobj = new NPObject { _class = classPtr, referenceCount = 1 };
+                   IntPtr p = Marshal.AllocHGlobal(Marshal.SizeOf<NPObject>());
+                   Marshal.StructureToPtr(npobj, p, false);
 
-                    if (created != IntPtr.Zero && IsReadablePointer(created))
-                    {
-                        // Ensure fields set like the native runner.
-                        var o = Marshal.PtrToStructure<NPObject>(created);
-                        o._class = classPtr;
-                        if (o.referenceCount == 0) o.referenceCount = 1;
-                        Marshal.StructureToPtr(o, created, false);
-                    }
+                   lock (s_allocatedObjectPtrs)
+                   {
+                       s_allocatedObjectPtrs.Add(p);
+                   }
 
-                    return created;
-                }
-                catch (Exception ex)
-                {
-                    Logger.Log($"NPN_CreateObject threw: {ex}");
-                    return IntPtr.Zero;
-                }
-            });
+                   return p;
+               }
+               catch (Exception ex)
+               {
+                   Logger.Log($"NPN_CreateObject threw: {ex}");
+                   return IntPtr.Zero;
+               }
+           });
             funcs.createobject = Marshal.GetFunctionPointerForDelegate(createObj);
 
             // NPN_RetainObjectProc

@@ -247,7 +247,7 @@ public static class Network
         bytesAvailable = req.WriteSize - req.WritePtr;
         var forceManifestClose = req.Url.Contains("Manifest.resourceFile") && req.Done;
 
-        if (req.Failed || (req.Done && bytesAvailable == 0) || forceManifestClose)
+        if (req.Failed || (req.Done && bytesAvailable == 0))
         {
             Plugin_DestroyStream!(nppUnmanagedPtr, req.StreamPtr, req.DoneReason);
 
