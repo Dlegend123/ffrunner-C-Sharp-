@@ -83,7 +83,7 @@ public static class Network
         public async ValueTask DisposeAsync()
         {
             _response?.Dispose();
-            await Stream.DisposeAsync().ConfigureAwait(false);
+            await Stream.DisposeAsync();
         }
     }
     [StructLayout(LayoutKind.Sequential)]
@@ -135,7 +135,7 @@ public static class Network
             throw new InvalidOperationException($"Failed to post IO message: {Marshal.GetLastWin32Error()}");
 
         // Wait asynchronously for the plugin to consume data
-        await Task.Run(() => req.ReadyEvent.WaitOne(20000), ct).ConfigureAwait(false);
+        await Task.Run(() => req.ReadyEvent.WaitOne(20000), ct);
     }
 
     public static void HandleIoProgress(Request req)
@@ -376,7 +376,7 @@ public static class Network
         if (cts == null)
             throw new InvalidOperationException("Network request processing is not initialized.");
 
-        Task.Run(() => ProcessRequestAsync(req, cts.Token), cts.Token).ConfigureAwait(false);
+        Task.Run(() => ProcessRequestAsync(req, cts.Token), cts.Token);
     }
 
     private static void EnsureWorker()
@@ -403,18 +403,18 @@ public static class Network
             while (!req.Done)
             {
                 if (!req.Initialized)
-                    await InitRequestAsync(req, ct).ConfigureAwait(false);
+                    await InitRequestAsync(req, ct);
 
                 if (!req.Failed)
                 {
                     if (req.IsPost)
-                        await ProcessPostAsync(req, ct).ConfigureAwait(false);
+                        await ProcessPostAsync(req, ct);
                     else
-                        await ProgressRequestAsync(req, ct).ConfigureAwait(false);
+                        await ProgressRequestAsync(req, ct);
                 }
 
                 if (!req.Completed)
-                    await PostRequestAsync(req, ct).ConfigureAwait(false);
+                    await PostRequestAsync(req, ct);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -427,7 +427,7 @@ public static class Network
         }
         finally
         {
-            CleanupRequest(req);
+           // CleanupRequest(req);
             Logger.Log($"Network.ProcessRequestAsync end requestId={req.Id}, url='{req.Url}'");
         }
     }
@@ -458,7 +458,7 @@ public static class Network
             else if (req.Source != null)
             {
                 var read = await req.Source.Stream.ReadAsync(req.Buffer.AsMemory(0, req.Buffer.Length), ct)
-                    .ConfigureAwait(false);
+                    ;
                 req.WriteSize = read;
             }
 
@@ -505,10 +505,10 @@ public static class Network
                         req.TargetUri = new Uri(endpointUrl);
 
                         var request = BuildHttpRequest(req, req.TargetUri);
-                        var resp = await SendRequestAsync(request, ct).ConfigureAwait(false);
+                        var resp = await SendRequestAsync(request, ct);
 
                         req.Source = new StreamSource(
-                            await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false),
+                            await resp.Content.ReadAsStreamAsync(ct),
                             resp.Content.Headers.ContentLength,
                             resp,
                             null
@@ -544,10 +544,10 @@ public static class Network
 
             // 5. HTTP/HTTPS source
             var httpRequest = BuildHttpRequest(req, target);
-            var httpResp = await SendRequestAsync(httpRequest, ct).ConfigureAwait(false);
+            var httpResp = await SendRequestAsync(httpRequest, ct);
 
             req.Source = new StreamSource(
-                await httpResp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false),
+                await httpResp.Content.ReadAsStreamAsync(ct),
                 httpResp.Content.Headers.ContentLength,
                 httpResp,
                 null
@@ -850,7 +850,7 @@ public static class Network
             };
 
             var resp = await SHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
-                .ConfigureAwait(false);
+                ;
 
             // FIX: Only throw for non-success status code
             if (!resp.IsSuccessStatusCode)
@@ -860,7 +860,7 @@ public static class Network
             }
 
             await using var source = new StreamSource(
-                await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false),
+                await resp.Content.ReadAsStreamAsync(ct),
                 resp.Content.Headers.ContentLength,
                 resp,
                 null);
@@ -895,7 +895,7 @@ public static class Network
 
     private static async Task<HttpResponseMessage> SendRequestAsync(HttpRequestMessage request, CancellationToken ct)
     {
-        var resp = await SHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        var resp = await SHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         resp.EnsureSuccessStatusCode();
         return resp;
     }

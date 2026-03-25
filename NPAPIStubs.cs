@@ -15,6 +15,7 @@ namespace ffrunner
     {
         [DllImport("user32.dll")]
         private static extern void PostQuitMessage(int exitCode);
+
         // Keep delegates alive to prevent GC collection for plugin lifetime
         public static readonly List<Delegate> pinnedDelegates = new();
 
@@ -134,7 +135,8 @@ namespace ffrunner
 
         private static void WriteVoidVariant(IntPtr resultPtr)
         {
-            try{
+            try
+            {
                 if (resultPtr == IntPtr.Zero)
                     return;
                 var result = new NPVariant
@@ -240,18 +242,37 @@ namespace ffrunner
                 return $"<npvariantbuffer-error:{ex.GetType().Name}>";
             }
         }
+        public static short NPN_GetValue(IntPtr instance, int variable, IntPtr retValue)
+        {
+            Logger.Log($"NPN_GetValue variable={variable}");
 
+            if (retValue == IntPtr.Zero)
+                return (short)Structs.NPError.NPERR_GENERIC_ERROR;
+
+            if (s_browserObjectPtr == IntPtr.Zero)
+                return (short)Structs.NPError.NPERR_GENERIC_ERROR;
+
+            // Increment refcount
+            browserObject.referenceCount++;
+
+            // ✅ Just write the pointer to the NPObject
+            Marshal.WriteIntPtr(retValue, s_browserObjectPtr);
+
+            Logger.Log($"NPN_GetValue returning obj=0x{s_browserObjectPtr.ToInt64():x} refCount={browserObject.referenceCount}");
+            return (short)Structs.NPError.NPERR_NO_ERROR;
+        }
         public static void SetBrowserWindowHandle(IntPtr hwnd)
         {
             Logger.Log($"SetBrowserWindowHandle hwnd=0x{hwnd.ToString("x")}");
             s_browserWindowHandle = hwnd;
         }
-        
+
         public static short NPP_DestroyStub(IntPtr instance, IntPtr saved)
         {
             Logger.Log("NPP_DestroyStub called");
             return 0; // NPERR_NO_ERROR
         }
+
         public static IntPtr NPN_CreateObject(IntPtr npp, IntPtr aClass)
         {
             Logger.Log($"NPN_CreateObject called npp=0x{npp:x}, class=0x{aClass:x}");
@@ -329,8 +350,8 @@ namespace ffrunner
                         owned = s_allocatedObjectPtrs.Remove(npobjPtr);
                     }
 
-                    if (owned)
-                        Marshal.FreeHGlobal(npobjPtr);
+                    //if (owned)
+                    //    Marshal.FreeHGlobal(npobjPtr);
                 }
                 catch (Exception ex)
                 {
@@ -364,54 +385,61 @@ namespace ffrunner
             var invokeDel = PinDelegate<NPAPIProcs.NP_InvokeDelegate>(
                 (IntPtr npobj, IntPtr name, IntPtr argsPtr, uint argCount, IntPtr resultPtr) =>
                 {
-                    Logger.Log($"NP_Invoke obj=0x{npobj.ToString("x")}, name=0x{name.ToString("x")}, argc={argCount}, args={DescribeNPVariantsBuffer(argsPtr, argCount)}, resultPtr=0x{resultPtr:x}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
+                    Logger.Log(
+                        $"NP_Invoke obj=0x{npobj.ToString("x")}, name=0x{name.ToString("x")}, argc={argCount}, args={DescribeNPVariantsBuffer(argsPtr, argCount)}, resultPtr=0x{resultPtr:x}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
                     return false;
                 });
 
             var invokeDefaultDel = PinDelegate<NPAPIProcs.NP_InvokeDefaultDelegate>(
                 (IntPtr npobj, IntPtr argsPtr, uint argCount, IntPtr resultPtr) =>
                 {
-                    Logger.Log($"NP_InvokeDefault obj=0x{npobj.ToString("x")}, argc={argCount}, args={DescribeNPVariantsBuffer(argsPtr, argCount)}, resultPtr=0x{resultPtr:x}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
+                    Logger.Log(
+                        $"NP_InvokeDefault obj=0x{npobj.ToString("x")}, argc={argCount}, args={DescribeNPVariantsBuffer(argsPtr, argCount)}, resultPtr=0x{resultPtr:x}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
                     return false;
                 });
 
             var getPropertyDel = PinDelegate<NPAPIProcs.NP_GetPropertyDelegate>(
                 (IntPtr npobj, IntPtr name, IntPtr resultPtr) =>
                 {
-                   Logger.Log($"NP_GetProperty obj=0x{npobj.ToString("x")}, name=0x{name.ToString("x")}, resultPtr=0x{resultPtr.ToString("x")}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
+                    Logger.Log(
+                        $"NP_GetProperty obj=0x{npobj.ToString("x")}, name=0x{name.ToString("x")}, resultPtr=0x{resultPtr.ToString("x")}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
 
                     return false;
                 });
 
-            var setPropertyDel = PinDelegate<NPAPIProcs.NP_SetPropertyDelegate>((IntPtr npobj, IntPtr name, IntPtr resultPtr) =>
-            {
-                Logger.Log($"NP_SetProperty obj=0x{npobj.ToString("x")}, name=0x{name.ToString("x")}, valuePtr=0x{resultPtr.ToString("x")}, value={DescribeNPVariantPtr(resultPtr)}");
-                
-                return false;
-            });
+            var setPropertyDel = PinDelegate<NPAPIProcs.NP_SetPropertyDelegate>(
+                (IntPtr npobj, IntPtr name, IntPtr resultPtr) =>
+                {
+                    Logger.Log(
+                        $"NP_SetProperty obj=0x{npobj.ToString("x")}, name=0x{name.ToString("x")}, valuePtr=0x{resultPtr.ToString("x")}, value={DescribeNPVariantPtr(resultPtr)}");
+
+                    return false;
+                });
             var removePropertyDel = PinDelegate<NPAPIProcs.NP_RemovePropertyDelegate>((IntPtr npobj, IntPtr name) =>
             {
                 Logger.Log($"NP_RemoveProperty obj=0x{npobj.ToString("x")}, name=0x{name.ToString("x")}");
                 return false;
             });
 
-            var enumerateDel = PinDelegate<NPAPIProcs.NP_EnumerateDelegate>((IntPtr npobj, ref IntPtr identifiersPtr, ref uint count) =>
-            {
-                Logger.Log($"NP_Enumerate obj=0x{npobj.ToString("x")}");
-                identifiersPtr = IntPtr.Zero;
-                count = 0;
-                return false;
-            });
+            var enumerateDel = PinDelegate<NPAPIProcs.NP_EnumerateDelegate>(
+                (IntPtr npobj, ref IntPtr identifiersPtr, ref uint count) =>
+                {
+                    Logger.Log($"NP_Enumerate obj=0x{npobj.ToString("x")}");
+                    identifiersPtr = IntPtr.Zero;
+                    count = 0;
+                    return false;
+                });
 
             var constructDel = PinDelegate<NPAPIProcs.NP_ConstructDelegate>(
                 (IntPtr npobj, IntPtr argsPtr, uint argCount, IntPtr resultPtr) =>
                 {
-                    Logger.Log($"NP_Construct obj=0x{npobj:x}, argc={argCount}, args={DescribeNPVariantsBuffer(argsPtr, argCount)}, resultPtr=0x{resultPtr:x}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
+                    Logger.Log(
+                        $"NP_Construct obj=0x{npobj:x}, argc={argCount}, args={DescribeNPVariantsBuffer(argsPtr, argCount)}, resultPtr=0x{resultPtr:x}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
                     return false;
                 });
 
             // Populate the managed NPClass structure with function pointers
-            
+
             clazz.allocate = Marshal.GetFunctionPointerForDelegate(allocateDel);
             clazz.deallocate = Marshal.GetFunctionPointerForDelegate(deallocateDel);
             clazz.invalidate = Marshal.GetFunctionPointerForDelegate(invalidateDel);
@@ -432,7 +460,7 @@ namespace ffrunner
             // ✅ Allocate and publish a persistent browser NPObject
             browserObject = new NPObject
             {
-                _class = s_browserClassPtr,   // assign NPClass pointer
+                _class = s_browserClassPtr, // assign NPClass pointer
                 referenceCount = 1,
             };
 
@@ -510,8 +538,9 @@ namespace ffrunner
                 Plugin_Write = Marshal.GetDelegateForFunctionPointer<NPAPIProcs.NPP_Write_Unmanaged_Cdecl>(funcs.write);
                 pinnedDelegates.Add(Plugin_Write);
             }
-            
-            Logger.Log($"InitPluginDelegates completed newp=0x{funcs.newp.ToString("x")}, destroy=0x{funcs.destroy.ToString("x")}, setwindow=0x{funcs.setwindow.ToString("x")}, getvalue=0x{funcs.getvalue.ToString("x")}, urlnotify=0x{funcs.urlnotify.ToString("x")}");
+
+            Logger.Log(
+                $"InitPluginDelegates completed newp=0x{funcs.newp.ToString("x")}, destroy=0x{funcs.destroy.ToString("x")}, setwindow=0x{funcs.setwindow.ToString("x")}, getvalue=0x{funcs.getvalue.ToString("x")}, urlnotify=0x{funcs.urlnotify.ToString("x")}");
         }
 
         public static void InitNetscapeFuncs(ref NPNetscapeFuncs funcs)
@@ -692,6 +721,7 @@ namespace ffrunner
                     {
                         WriteVoidVariant(resultPtr);
                     }
+
                     Logger.Log(
                         $"NPN_GetProperty obj={DescribeNPObjectRefCount(obj)}, property={DescribeNPIdentifier(propertyName)}, resultPtr=0x{resultPtr.ToString("x")}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
 
@@ -738,125 +768,98 @@ namespace ffrunner
             funcs.releasevariantvalue = Marshal.GetFunctionPointerForDelegate(releaseVariant);
 
             // NPN_GetValueProc
-            var getValueDel = pin<NPAPIProcs.NPN_GetValueDelegate>(
-                (IntPtr instance, int variable, IntPtr retValuePtr) =>
-                {
-                    try
-                    {
-                        Logger.Log($"NPN_GetValue variable={variable}");
-
-                        if (retValuePtr == IntPtr.Zero)
-                            return (short)1;
-
-                        if (s_browserObjectPtr == IntPtr.Zero)
-                        {
-                            Marshal.WriteIntPtr(retValuePtr, IntPtr.Zero);
-                            return (short)1;
-                        }
-                        
-                        browserObject.referenceCount++;
-                        Marshal.StructureToPtr(browserObject, s_browserObjectPtr, false);
-                        Marshal.WriteIntPtr(retValuePtr, s_browserObjectPtr);
-                        Logger.Log(
-                            $"NPN_GetValue returning obj={DescribeNPObjectRefCount(s_browserObjectPtr)} for variable={variable}");
-                        return (short)0;
-                    }
-                    catch
-                    {
-                        return (short)1;
-                    }
-                });
+            var getValueDel = new NPN_GetValueDelegate(NPN_GetValue);
             funcs.getvalue = Marshal.GetFunctionPointerForDelegate(getValueDel);
 
             // NPN_EvaluateProc
             var evaluateDel = pin<NPAPIProcs.NPN_EvaluateDelegate>(
-                 (IntPtr npp, IntPtr obj, IntPtr scriptPtr, IntPtr resultPtr) =>
-                 {
-                     try
-                     {
-                         string code = string.Empty;
-                         if (scriptPtr != IntPtr.Zero && IsReadablePointer(scriptPtr))
-                         {
-                             try
-                             {
-                                 var script = Marshal.PtrToStructure<NPString>(scriptPtr);
-                                 if (script.UTF8Characters != IntPtr.Zero && IsReadablePointer(script.UTF8Characters))
-                                     code = Marshal.PtrToStringUTF8(script.UTF8Characters) ?? string.Empty;
-                             }
-                             catch (Exception ex)
-                             {
-                                 Logger.Log($"NPN_Evaluate failed to read script string: {ex}");
-                             }
-                         }
+                (IntPtr npp, IntPtr obj, IntPtr scriptPtr, IntPtr resultPtr) =>
+                {
+                    try
+                    {
+                        string code = string.Empty;
+                        if (scriptPtr != IntPtr.Zero && IsReadablePointer(scriptPtr))
+                        {
+                            try
+                            {
+                                var script = Marshal.PtrToStructure<NPString>(scriptPtr);
+                                if (script.UTF8Characters != IntPtr.Zero && IsReadablePointer(script.UTF8Characters))
+                                    code = Marshal.PtrToStringUTF8(script.UTF8Characters) ?? string.Empty;
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Log($"NPN_Evaluate failed to read script string: {ex}");
+                            }
+                        }
 
-                         Logger.Log(
-                             $"NPN_Evaluate script='{code}', resultPtr=0x{resultPtr:x}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
+                        Logger.Log(
+                            $"NPN_Evaluate script='{code}', resultPtr=0x{resultPtr:x}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
 
-                         const string HOMEPAGE_CALLBACK_SCRIPT = "HomePage(\"UnityEngine.GameObject\");";
-                         const string PAGEOUT_CALLBACK_SCRIPT = "PageOut(\"UnityEngine.GameObject\");";
-                         const string AUTH_CALLBACK_SCRIPT = "authDoCallback(\"UnityEngine.GameObject\");";
-                         const string NAVIGATE_SCRIPT = "location.href=\"";
+                        const string HOMEPAGE_CALLBACK_SCRIPT = "HomePage(\"UnityEngine.GameObject\");";
+                        const string PAGEOUT_CALLBACK_SCRIPT = "PageOut(\"UnityEngine.GameObject\");";
+                        const string AUTH_CALLBACK_SCRIPT = "authDoCallback(\"UnityEngine.GameObject\");";
+                        const string NAVIGATE_SCRIPT = "location.href=\"";
 
-                         if (code.StartsWith(HOMEPAGE_CALLBACK_SCRIPT, StringComparison.Ordinal)
-                             || code.StartsWith(PAGEOUT_CALLBACK_SCRIPT, StringComparison.Ordinal))
-                         {
-                             // Application.Current?.Dispatcher?.BeginInvoke(new Action(() => Application.Current?.Shutdown()));
-                             Application.Current?.Dispatcher?.BeginInvoke(new Action(() => PostQuitMessage(0)));
+                        if (code.StartsWith(HOMEPAGE_CALLBACK_SCRIPT, StringComparison.Ordinal)
+                            || code.StartsWith(PAGEOUT_CALLBACK_SCRIPT, StringComparison.Ordinal))
+                        {
+                            // Application.Current?.Dispatcher?.BeginInvoke(new Action(() => Application.Current?.Shutdown()));
+                            Application.Current?.Dispatcher?.BeginInvoke(new Action(() => PostQuitMessage(0)));
 
-                         }
-                         else if (code.StartsWith(AUTH_CALLBACK_SCRIPT, StringComparison.Ordinal))
-                         {
-                             string teg = TryGetArgValue("tegId", "TegId", "Username", "username") ?? string.Empty;
-                             string auth = TryGetArgValue("authId", "AuthId", "token") ?? string.Empty;
+                        }
+                        else if (code.StartsWith(AUTH_CALLBACK_SCRIPT, StringComparison.Ordinal))
+                        {
+                            string teg = TryGetArgValue("tegId", "TegId", "Username", "username") ?? string.Empty;
+                            string auth = TryGetArgValue("authId", "AuthId", "token") ?? string.Empty;
 
-                             Logger.Log(
-                                 $"NPN_Evaluate auth callback begin tid={Environment.CurrentManagedThreadId}, teg='{teg}', authPresent={!string.IsNullOrEmpty(auth)}");
+                            Logger.Log(
+                                $"NPN_Evaluate auth callback begin tid={Environment.CurrentManagedThreadId}, teg='{teg}', authPresent={!string.IsNullOrEmpty(auth)}");
 
-                             if (!string.IsNullOrEmpty(teg) && !string.IsNullOrEmpty(auth))
-                             {
-                                 Logger.Log($"Auto-auth as {teg}");
+                            if (!string.IsNullOrEmpty(teg) && !string.IsNullOrEmpty(auth))
+                            {
+                                Logger.Log($"Auto-auth as {teg}");
 
-                                 Logger.Log("NPN_Evaluate auth step -> SetTEGid");
-                                 UnitySendMessage("GlobalManager", "SetTEGid", MakeStringVariant(teg));
-                                 Logger.Log("NPN_Evaluate auth step <- SetTEGid");
+                                Logger.Log("NPN_Evaluate auth step -> SetTEGid");
+                                UnitySendMessage("GlobalManager", "SetTEGid", MakeStringVariant(teg));
+                                Logger.Log("NPN_Evaluate auth step <- SetTEGid");
 
-                                 Logger.Log("NPN_Evaluate auth step -> SetAuthid");
-                                 UnitySendMessage("GlobalManager", "SetAuthid", MakeStringVariant(auth));
-                                 Logger.Log("NPN_Evaluate auth step <- SetAuthid");
+                                Logger.Log("NPN_Evaluate auth step -> SetAuthid");
+                                UnitySendMessage("GlobalManager", "SetAuthid", MakeStringVariant(auth));
+                                Logger.Log("NPN_Evaluate auth step <- SetAuthid");
 
-                                 Logger.Log("NPN_Evaluate auth step -> DoAuth");
-                                 UnitySendMessage("GlobalManager", "DoAuth", MakeIntVariant(0));
-                                 Logger.Log("NPN_Evaluate auth step <- DoAuth");
-                             }
+                                Logger.Log("NPN_Evaluate auth step -> DoAuth");
+                                UnitySendMessage("GlobalManager", "DoAuth", MakeIntVariant(0));
+                                Logger.Log("NPN_Evaluate auth step <- DoAuth");
+                            }
 
-                             Logger.Log($"NPN_Evaluate auth callback end tid={Environment.CurrentManagedThreadId}");
-                         }
+                            Logger.Log($"NPN_Evaluate auth callback end tid={Environment.CurrentManagedThreadId}");
+                        }
 
-                         if (resultPtr != IntPtr.Zero)
-                         {
-                             var result = new NPVariant
-                             {
-                                 type = NPVariantType.Void,
-                                 value = new NPVariant.NPVariantValue()
-                             };
+                        if (resultPtr != IntPtr.Zero)
+                        {
+                            var result = new NPVariant
+                            {
+                                type = NPVariantType.Void,
+                                value = new NPVariant.NPVariantValue()
+                            };
 
-                             Marshal.StructureToPtr(result, resultPtr, false);
-                         }
+                            Marshal.StructureToPtr(result, resultPtr, false);
+                        }
 
-                         Logger.Log($"NPN_Evaluate completed resultAfter={DescribeNPVariantPtr(resultPtr)}");
+                        Logger.Log($"NPN_Evaluate completed resultAfter={DescribeNPVariantPtr(resultPtr)}");
 
-                         return true;
-                     }
-                     catch (Exception ex)
-                     {
-                         Logger.Log($"NPN_Evaluate threw: {ex}");
-                         return false;
-                     }
-                 });
+                        return true;
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"NPN_Evaluate threw: {ex}");
+                        return false;
+                    }
+                });
             funcs.evaluate = Marshal.GetFunctionPointerForDelegate(evaluateDel);
 
-			// NPN_GetStringIdentifier
-			var getStringId = pin<NPAPIProcs.NPN_GetStringIdentifierDelegate>((IntPtr namePtr) =>
+            // NPN_GetStringIdentifier
+            var getStringId = pin<NPAPIProcs.NPN_GetStringIdentifierDelegate>((IntPtr namePtr) =>
             {
                 Logger.Log($"NPN_GetStringIdentifier namePtr=0x{namePtr.ToString("x")}");
                 if (namePtr == IntPtr.Zero) return IntPtr.Zero;
@@ -866,7 +869,7 @@ namespace ffrunner
             funcs.getstringidentifier = Marshal.GetFunctionPointerForDelegate(getStringId);
 
             // NPN_GetStringIdentifiers
-			var getStringIds = pin<NPAPIProcs.NPN_GetStringIdentifiersDelegate>(
+            var getStringIds = pin<NPAPIProcs.NPN_GetStringIdentifiersDelegate>(
                 (IntPtr namesPtr, int nameCount, IntPtr identifiersPtr) =>
                 {
                     try
@@ -887,9 +890,9 @@ namespace ffrunner
                 });
             funcs.getstringidentifiers = Marshal.GetFunctionPointerForDelegate(getStringIds);
 
-		}
-        
-		public static class NPIdentifierManager
+        }
+
+        public static class NPIdentifierManager
         {
             private static readonly Dictionary<string, IntPtr> _map = new();
             private static int _nextId = 1;
@@ -903,13 +906,14 @@ namespace ffrunner
                     id = (IntPtr)_nextId++;
                     _map[name] = id;
                 }
+
                 return id;
             }
         }
 
 
-		// Helper: create NPVariant string (tracks native allocation for later release)
-		private static NPVariant MakeStringVariant(string s)
+        // Helper: create NPVariant string (tracks native allocation for later release)
+        private static NPVariant MakeStringVariant(string s)
         {
             var v = new NPVariant();
             string text = s ?? string.Empty;
@@ -918,7 +922,10 @@ namespace ffrunner
             Marshal.Copy(bytes, 0, p, bytes.Length);
             Marshal.WriteByte(p, bytes.Length, 0);
 
-            lock (s_allocatedVariantStrings) { s_allocatedVariantStrings.Add(p); }
+            lock (s_allocatedVariantStrings)
+            {
+                s_allocatedVariantStrings.Add(p);
+            }
 
             v.type = NPVariantType.String;
             v.value.stringValue = new NPString
@@ -935,7 +942,7 @@ namespace ffrunner
             var v = new NPVariant
             {
                 type = NPVariantType.Int32,
-                value = new NPVariant.NPVariantValue(){intValue = i}
+                value = new NPVariant.NPVariantValue() { intValue = i }
             };
             return v;
         }
@@ -959,9 +966,10 @@ namespace ffrunner
             {
                 Logger.Log($"TryGetArgValue threw: {ex}");
             }
+
             return null;
         }
-        
+
         private static void UnitySendMessage(string targetClass, string msg, NPVariant val)
         {
             var dispatcher = Application.Current?.Dispatcher;
@@ -969,7 +977,8 @@ namespace ffrunner
             {
                 dispatcher.BeginInvoke(() =>
                     {
-                        Logger.Log($"UnitySendMessage exit tid={Environment.CurrentManagedThreadId}, target='{targetClass}', msg='{msg}'");
+                        Logger.Log(
+                            $"UnitySendMessage exit tid={Environment.CurrentManagedThreadId}, target='{targetClass}', msg='{msg}'");
                         UnitySendMessageInternal(targetClass, msg, val);
                     },
                     System.Windows.Threading.DispatcherPriority.Send);
@@ -1006,7 +1015,7 @@ namespace ffrunner
                     return;
                 }
 
-				IntPtr sendId = NPIdentifierManager.GetStringIdentifier("SendMessage");
+                IntPtr sendId = NPIdentifierManager.GetStringIdentifier("SendMessage");
                 if (sendId == IntPtr.Zero)
                 {
                     Logger.Log("UnitySendMessage: SendMessage identifier invalid");
@@ -1014,8 +1023,8 @@ namespace ffrunner
                 }
 
 
-				// --- PIN NPVariant strings to prevent GC/memory corruption ---
-				GCHandle handleTarget = GCHandle.Alloc(targetClass, GCHandleType.Pinned);
+                // --- PIN NPVariant strings to prevent GC/memory corruption ---
+                GCHandle handleTarget = GCHandle.Alloc(targetClass, GCHandleType.Pinned);
                 GCHandle handleMsg = GCHandle.Alloc(msg, GCHandleType.Pinned);
 
                 NPVariant[] argsManaged = new NPVariant[3];
@@ -1034,7 +1043,7 @@ namespace ffrunner
                     }
 
                     var invokeDel = Marshal.GetDelegateForFunctionPointer<NPAPIProcs.NP_InvokeDelegate>(npclass.invoke);
-                    
+
                     var result = new NPVariant
                     {
                         type = NPVariantType.Void,
@@ -1047,9 +1056,9 @@ namespace ffrunner
                 }
                 finally
                 {
-                    Marshal.FreeHGlobal(argsPtr);
-                    handleTarget.Free();
-                    handleMsg.Free();
+                    //Marshal.FreeHGlobal(argsPtr);
+                    //handleTarget.Free();
+                    //handleMsg.Free();
                 }
             }
             catch (Exception ex)
@@ -1063,7 +1072,7 @@ namespace ffrunner
         {
             Logger.Log("NPAPIStubs.Cleanup entered");
             try
-            { 
+            {
                 // Free identifier strings
                 lock (s_allocatedIdentifierPtrs)
                 {
@@ -1074,6 +1083,7 @@ namespace ffrunner
 
                     s_allocatedIdentifierPtrs.Clear();
                 }
+
                 // Free created NPObjects (single owner list; do NOT free s_locationObjectPtrs separately)
                 lock (s_allocatedObjectPtrs)
                 {
@@ -1141,7 +1151,8 @@ namespace ffrunner
         }
 
         [DllImport("kernel32.dll")]
-        private static extern IntPtr VirtualQuery(IntPtr lpAddress, out MEMORY_BASIC_INFORMATION lpBuffer, IntPtr dwLength);
+        private static extern IntPtr VirtualQuery(IntPtr lpAddress, out MEMORY_BASIC_INFORMATION lpBuffer,
+            IntPtr dwLength);
 
         private static IntPtr s_scriptableClassPtr = IntPtr.Zero;
 
@@ -1218,14 +1229,17 @@ namespace ffrunner
                 if (!IsReadablePointer(candidate)) continue;
 
                 int version = Marshal.ReadInt32(candidate);
-                Logger.Verbose($"TryFindClassPtr: depth={depth}, offset={i * IntPtr.Size}, candidate=0x{candidate.ToString("x")}, version={version}");
+                Logger.Verbose(
+                    $"TryFindClassPtr: depth={depth}, offset={i * IntPtr.Size}, candidate=0x{candidate.ToString("x")}, version={version}");
 
                 // Normal NPClass path
                 if (version == 3 || version == 2)
                     return candidate;
 
                 // Heuristic: hasMethod + invoke look executable
-                IntPtr hasMethod = Marshal.ReadIntPtr(candidate, 16); // structVersion(4) + allocate(4) + deallocate(4) + invalidate(4)
+                IntPtr
+                    hasMethod = Marshal.ReadIntPtr(candidate,
+                        16); // structVersion(4) + allocate(4) + deallocate(4) + invalidate(4)
                 IntPtr invoke = Marshal.ReadIntPtr(candidate, 20);
                 if (IsExecutablePointer(hasMethod) && IsExecutablePointer(invoke))
                 {
@@ -1239,6 +1253,53 @@ namespace ffrunner
             }
 
             return IntPtr.Zero;
+        }
+
+        public static void WarmUpScriptableObject(IntPtr scriptable)
+        {
+            if (scriptable == IntPtr.Zero)
+            {
+                Logger.Log("WarmUpScriptableObject: scriptable is NULL");
+                return;
+            }
+
+            try
+            {
+                if (!IsReadablePointer(scriptable))
+                {
+                    Logger.Log($"WarmUpScriptableObject: scriptable not readable: 0x{scriptable.ToString("x")}");
+                    return;
+                }
+
+                var npobj = Marshal.PtrToStructure<NPObject>(scriptable);
+                if (npobj._class == IntPtr.Zero || !IsReadablePointer(npobj._class))
+                {
+                    Logger.Log("WarmUpScriptableObject: npobj._class is NULL or unreadable");
+                    return;
+                }
+
+                var cls = Marshal.PtrToStructure<NPClass>(npobj._class);
+                if (cls.hasMethod == IntPtr.Zero || !IsExecutablePointer(cls.hasMethod))
+                {
+                    Logger.Log("WarmUpScriptableObject: class._hasMethod is NULL or not executable");
+                    return;
+                }
+
+                IntPtr styleId = NPIdentifierManager.GetStringIdentifier("style");
+                if (styleId == IntPtr.Zero)
+                {
+                    Logger.Log("WarmUpScriptableObject: style identifier is NULL");
+                    return;
+                }
+
+                var hasMethod = Marshal.GetDelegateForFunctionPointer<NPAPIProcs.NP_HasMethodDelegate>(cls.hasMethod);
+                bool ok = hasMethod(scriptable, styleId);
+                Logger.Log($"WarmUpScriptableObject: hasMethod('style') returned {ok}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"WarmUpScriptableObject threw: {ex}");
+            }
         }
 
         public static void InitializeScriptableObject(IntPtr scriptable)

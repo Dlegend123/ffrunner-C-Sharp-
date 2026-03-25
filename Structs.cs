@@ -20,23 +20,29 @@ namespace ffrunner
         [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPPluginFuncs
         {
-            public ushort size;      // must match sizeof(NPPluginFuncs)
-            public ushort version;   // NPAPI version
+            public ushort size;
+            public ushort version;
 
             public IntPtr newp;
             public IntPtr destroy;
             public IntPtr setwindow;
             public IntPtr newstream;
             public IntPtr destroystream;
-            public IntPtr streamasfile;
+            public IntPtr asfile;
             public IntPtr writeready;
             public IntPtr write;
-            public IntPtr eventproc;
+            public IntPtr print;
+            public IntPtr eventProc;
             public IntPtr urlnotify;
+            public IntPtr javaClass;
             public IntPtr getvalue;
             public IntPtr setvalue;
+            public IntPtr gotfocus;
+            public IntPtr lostfocus;
+            public IntPtr urlredirectnotify;
+            public IntPtr clearsitedata;
+            public IntPtr getsiteswithdata;
         }
-
 
         [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPClass
@@ -57,7 +63,7 @@ namespace ffrunner
         }
 
 
-        [StructLayout(LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPNetscapeFuncs
         {
             public ushort size;
@@ -120,7 +126,7 @@ namespace ffrunner
             public IntPtr urlredirectresponse;
         }
 
-        [StructLayout(LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPP_t
         {
             public IntPtr pdata;
@@ -128,7 +134,7 @@ namespace ffrunner
         }
 
         // Matches npapi.h (uint16 top/left/bottom/right)
-        [StructLayout(LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPRect
         {
             public ushort top;
@@ -143,9 +149,9 @@ namespace ffrunner
             Window = 1,
             Drawable = 2,
         }
-        
+
         // Matches npapi.h layout: clipRect then type (type is LAST)
-        [StructLayout(LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPWindow
         {
             public IntPtr window;
@@ -157,11 +163,13 @@ namespace ffrunner
             public NPWindowType type;
         }
 
-        [StructLayout(LayoutKind.Explicit)]
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPVariant
         {
-            [FieldOffset(0)] public NPVariantType type;
-            [FieldOffset(8)] public NPVariantValue value;
+            public NPVariantType type; // 4 bytes
+
+            // Union starts immediately after type
+            public NPVariantValue value;
 
             [StructLayout(LayoutKind.Explicit)]
             public struct NPVariantValue
@@ -174,7 +182,8 @@ namespace ffrunner
             }
         }
 
-        [StructLayout(LayoutKind.Sequential)]
+
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPSavedData
         {
             public int len;
@@ -192,7 +201,7 @@ namespace ffrunner
             Object = 6,
         }
 
-        [StructLayout(LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPString
         {
             public IntPtr UTF8Characters;

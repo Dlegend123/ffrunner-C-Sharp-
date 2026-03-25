@@ -73,7 +73,6 @@ namespace ffrunner
                 s_hwnd = hwnd;
                 Network.InitializeWindow(hwnd);
                 SetBrowserWindowHandle(hwnd);
-                ValidateStructSizes();
 
                 // Resolve NPAPI exports
                 var pNP_GetEntryPoints = GetProcAddress(App.NpUnityDll, "NP_GetEntryPoints");
@@ -98,7 +97,7 @@ namespace ffrunner
                 pluginFuncs = new NPPluginFuncs
                 {
                     size = (ushort)Marshal.SizeOf<NPPluginFuncs>(),
-                    version = 17
+                    version = NP_VERSION
                 };
                 NP_GetEntryPoints(ref pluginFuncs);
 
@@ -207,12 +206,7 @@ namespace ffrunner
                 browserObject = Marshal.PtrToStructure<NPObject>(s_browserObjectPtr);
 
                 Logger.Log($"FillBrowserFuncs completed browserClassPtr=0x{s_browserClassPtr:x}, browserObjectPtr=0x{s_browserObjectPtr:x}");
-
-                // Call NPP_SetWindow
-                var setwindow = Marshal.GetDelegateForFunctionPointer<NPP_SetWindow_Unmanaged_Cdecl>(pluginFuncs.setwindow);
-                var npWindow = s_npWindow; // fill with hwnd, width, height
-                setwindow(nppUnmanagedPtr, ref npWindow);
-
+                
                 // Now call NPP_GetValue for scriptable object
                 var getvalue = Marshal.GetDelegateForFunctionPointer<NPP_GetValue_Unmanaged_Cdecl>(pluginFuncs.getvalue);
                 IntPtr scriptableObjectPtr = IntPtr.Zero;
@@ -221,6 +215,7 @@ namespace ffrunner
 
                 scriptableObject = scriptableObjectPtr;
                 InitializeScriptableObject(scriptableObjectPtr);
+                WarmUpScriptableObject(scriptableObjectPtr);
             }
             catch (Exception ex)
             {
@@ -239,7 +234,7 @@ namespace ffrunner
             Logger.Log($"NPPluginFuncs size={sizeFuncs}, NPClass size={sizeClass}");
 
             // Optional: throw if mismatch with expected native sizes
-            if (sizeFuncs != 52) // adjust to actual sizeof(NPPluginFuncs) in C
+            if (sizeFuncs != 56) // adjust to actual sizeof(NPPluginFuncs) in C
                 throw new InvalidOperationException("NPPluginFuncs size mismatch");
         }
 
