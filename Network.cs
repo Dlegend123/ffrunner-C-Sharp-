@@ -175,33 +175,15 @@ public static class Network
         {
             req.UrlPtr = StringToUtf8(req.Url);
             req.MimeTypePtr = StringToUtf8(GetMimeType(req.Url));
-            req.HeadersPtr = !string.IsNullOrEmpty(req.Source?.Headers) ? StringToUtf8(req.Source.Headers) : IntPtr.Zero;
-
-            var streamEmu = new NPStream
-            {
-                pdata = IntPtr.Zero,
-                ndata = IntPtr.Zero,
-                url = req.UrlPtr,
-                end = req.End,
-                lastmodified = 0,
-                notifyData = req.NotifyData,
-                headers = req.HeadersPtr
-            };
-
+            var streamEmu = new NPStream { url = req.UrlPtr, end = req.End, notifyData = req.NotifyData };
             req.StreamPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPStream>());
             Marshal.StructureToPtr(streamEmu, req.StreamPtr, false);
 
             int res = Plugin_NewStream!(nppUnmanagedPtr, req.MimeTypePtr, req.StreamPtr, 0, out var stype);
             req.StreamType = stype;
-
-            if (res != 0)
-            {
-                req.Failed = true;
-                req.Done = true;
-                req.DoneReason = NPRES_NETWORK_ERR;
-                return;
-            }
+            if (res != 0) { req.Failed = true; req.Done = true; return; }
         }
+
 
         // Feed plugin loop (simplified)
         int writePtr = req.WritePtr;
@@ -465,83 +447,115 @@ public static class Network
         {
             while (!req.Done && !req.Failed)
             {
-                int toRead = REQUEST_BUFFER_SIZE;
+                int bytesRead = 0;
 
+                // --- Handle in-memory content ---
                 if (req.InMemoryData != null)
                 {
                     var remaining = req.InMemoryData.Length - req.InMemoryOffset;
                     if (remaining > 0)
                     {
-                        var toCopy = Math.Min(req.Buffer.Length, remaining);
-                        Buffer.BlockCopy(req.InMemoryData, req.InMemoryOffset, req.Buffer, 0, toCopy);
-                        req.InMemoryOffset += toCopy;
-                        req.WriteSize = toCopy;
+                        bytesRead = Math.Min(REQUEST_BUFFER_SIZE, remaining);
+                        Buffer.BlockCopy(req.InMemoryData, req.InMemoryOffset, req.Buffer, 0, bytesRead);
+                        req.InMemoryOffset += bytesRead;
                     }
                     else
+                    {
+                        bytesRead = 0;
+                        req.Done = true;
+                        req.DoneReason = NPRES_DONE;
+                    }
+                }
+                // --- Handle stream content (file or HTTP) ---
+                else if (req.Source?.Stream != null)
+                {
+                    bytesRead = await req.Source.Stream.ReadAsync(req.Buffer.AsMemory(0, REQUEST_BUFFER_SIZE), ct);
+                    if (bytesRead == 0)
                     {
                         req.Done = true;
                         req.DoneReason = NPRES_DONE;
                     }
-                    return;
                 }
 
-                if (req.Source?.Stream != null)
-                {
-                    toRead = Math.Min(toRead, req.Buffer.Length);
-                    toRead = await req.Source.Stream.ReadAsync(req.Buffer.AsMemory(0, toRead), ct);
-                }
-                else
-                {
-                    toRead = 0;
-                }
+                req.WriteSize = bytesRead;
 
-                req.WriteSize = toRead;
-                if (req.WriteSize == 0) { req.Done = true; req.DoneReason = NPRES_DONE; break; }
-
+                // --- Feed plugin ---
                 int writePtr = 0;
                 while (writePtr < req.WriteSize)
                 {
-                    if (req.StreamPtr == IntPtr.Zero) { req.Failed = true; req.Done = true; req.DoneReason = NPRES_NETWORK_ERR; break; }
+                    if (req.StreamPtr == IntPtr.Zero)
+                    {
+                        // Create NPStream and call Plugin_NewStream (mirrors requests.c)
+                        req.UrlPtr = StringToUtf8(req.Url);
+                        req.MimeTypePtr = StringToUtf8(GetMimeType(req.Url));
+                        var streamStruct = new NPStream
+                        {
+                            url = req.UrlPtr,
+                            end = req.End,
+                            notifyData = req.NotifyData
+                        };
+                        req.StreamPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPStream>());
+                        Marshal.StructureToPtr(streamStruct, req.StreamPtr, false);
+
+                        int res = Plugin_NewStream!(nppUnmanagedPtr, req.MimeTypePtr, req.StreamPtr, 0, out var stype);
+                        req.StreamType = stype;
+                        if (res != 0)
+                        {
+                            req.Failed = true;
+                            req.Done = true;
+                            req.DoneReason = NPRES_NETWORK_ERR;
+                            break;
+                        }
+                    }
 
                     int ready = Plugin_WriteReady!(nppUnmanagedPtr, req.StreamPtr);
-                    if (ready <= 0) { await Task.Yield(); continue; }
+                    if (ready <= 0)
+                    {
+                        await Task.Yield();
+                        continue;
+                    }
 
                     int chunk = Math.Min(ready, req.WriteSize - writePtr);
-                    chunk = Math.Min(chunk, req.Buffer.Length - writePtr);
-
                     if (req.UnmanagedBuffer == IntPtr.Zero)
                         req.UnmanagedBuffer = Marshal.AllocHGlobal(REQUEST_BUFFER_SIZE);
 
                     Marshal.Copy(req.Buffer, writePtr, req.UnmanagedBuffer, chunk);
                     int written = Plugin_Write!(nppUnmanagedPtr, req.StreamPtr, req.BytesWritten, chunk, req.UnmanagedBuffer);
 
-                    if (written <= 0) { req.Failed = true; req.Done = true; req.DoneReason = NPRES_NETWORK_ERR; break; }
+                    if (written <= 0)
+                    {
+                        req.Failed = true;
+                        req.Done = true;
+                        req.DoneReason = NPRES_NETWORK_ERR;
+                        break;
+                    }
 
                     writePtr += written;
                     req.BytesWritten += written;
                     req.WritePtr = writePtr;
                 }
-            }
 
-            if (req.Done || req.Failed)
-            {
-                if (req.StreamPtr != IntPtr.Zero)
+                // --- Mark completion if done ---
+                if (req.Done || req.Failed)
                 {
-                    Plugin_DestroyStream!(nppUnmanagedPtr, req.StreamPtr, req.DoneReason);
-                    req.StreamPtr = IntPtr.Zero;
+                    if (req.StreamPtr != IntPtr.Zero)
+                    {
+                        Plugin_DestroyStream!(nppUnmanagedPtr, req.StreamPtr, req.DoneReason);
+                        req.StreamPtr = IntPtr.Zero;
+                    }
+
+                    if (req.DoNotify)
+                        Plugin_UrlNotify!(nppUnmanagedPtr, req.UrlPtr, req.DoneReason, req.NotifyData);
+
+                    if (req.Source != null)
+                    {
+                        await req.Source.DisposeAsync();
+                        req.Source = null;
+                    }
+
+                    req.Completed = true;
+                    CompleteRequest();
                 }
-
-                if (req.DoNotify)
-                    Plugin_UrlNotify!(nppUnmanagedPtr, req.UrlPtr, req.DoneReason, req.NotifyData);
-
-                if (req.Source != null)
-                {
-                    await req.Source.DisposeAsync();
-                    req.Source = null;
-                }
-
-                req.Completed = true;
-                CompleteRequest();
             }
         }
         catch (Exception ex)
