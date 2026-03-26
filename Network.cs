@@ -802,19 +802,38 @@ public static class Network
 
             if (fileName == "logininfo.php")
             {
-                var login = PluginMemory.GetLoginInfo();
-                string text = $"{login.Username}\n{login.Token}\n";
-                content = Encoding.ASCII.GetBytes(text);
-                Logger.Log($"[Network] loginInfo.php served from memory: {text.Replace("\n", "\\n")}");
+                var addr = App.Args.ServerAddress ?? string.Empty;
+                Logger.Log($"[Network] loginInfo.php -> '{addr}'");
+                content = Encoding.ASCII.GetBytes(addr + "\n");
                 return true;
             }
 
             if (fileName == "assetinfo.php")
             {
-                var asset = PluginMemory.GetAssetInfo();
-                string text = $"{asset.AssetUrl}\n{asset.MainPathOrAddress}\n";
-                content = Encoding.ASCII.GetBytes(text);
-                Logger.Log($"[Network] assetInfo.php served from memory: {text.Replace("\n", "\\n")}");
+                // Build the AssetInfo exactly like the native requests.c does
+                AssetInfo info = new AssetInfo
+                {
+                    Name = "",                          // typically empty
+                    Url = App.Args.AssetUrl ?? "",     // loader asset base URL
+                    Size = 0,
+                    Flags = 0
+                };
+
+                int structSize = Marshal.SizeOf<AssetInfo>();
+                content = new byte[structSize];
+
+                IntPtr ptr = Marshal.AllocHGlobal(structSize);
+                try
+                {
+                    Marshal.StructureToPtr(info, ptr, false);
+                    Marshal.Copy(ptr, content, 0, structSize);
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+
+                Logger.Log($"[Network] assetInfo.php served as AssetInfo struct: Url='{info.Url}'");
                 return true;
             }
         }
