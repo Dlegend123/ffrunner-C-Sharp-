@@ -190,7 +190,7 @@ namespace ffrunner
                     window = hwnd, // ✅ USE EXACT HWND FROM StartPlugin
                     x = 0,
                     y = 0,
-                    type = NPWindowType.Window
+                    type = (uint)NPWindowType.Window
                 };
 
                 // Get correct size

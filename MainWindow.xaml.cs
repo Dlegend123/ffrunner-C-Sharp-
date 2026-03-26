@@ -37,48 +37,79 @@ namespace ffrunner
             Logger.Log(
                 $"MainWindow ctor completed ActualWidth={Width}, ActualHeight={Height}, WindowState={WindowState}");
         }
-        
+
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
-
-            switch (msg)
+            try
             {
-                case WM_CLOSE:
-                case WM_DESTROY:
-                    NotifyWindowClosed();
-                    break;
-                case WM_SIZE:
-                    RedrawPlugin(hwnd);
-                    break;
-                case WM_MOVE:
-                    Logger.Verbose($"WndProc: window changed (msg=0x{msg:x})");
-                    NotifyWindowChanged(hwnd);
-                    break;
-            }
-
-            if (msg == Network.SIoMsg && lParam != IntPtr.Zero)
-            {
-                var handle = GCHandle.FromIntPtr(lParam);
-                if (handle.Target is Network.Request req)
+                switch (msg)
                 {
-                    Network.HandleIoProgress(req);
+                    case WM_CLOSE:
+                    case WM_DESTROY:
+                        NotifyWindowClosed();
+                        break;
 
-                    if (req is { Completed: true, Handle.IsAllocated: true })
-                    {
-                        req.Handle.Value.Free();
-                        req.Handle = null;
-                        Logger.Verbose($"WndProc freed GCHandle for requestId={req.Id}");
-                    }
-                    else
-                    {
-                        req.ReadyEvent.Set();
-                    }
+                    case WM_SIZE:
+                        RedrawPlugin(hwnd);
+                        break;
+
+                    case WM_MOVE:
+                        Logger.Verbose($"WndProc: window moved (msg=0x{msg:x})");
+                        NotifyWindowChanged(hwnd);
+                        break;
                 }
 
-                handled = true;
-                return IntPtr.Zero;
-            }
+                // --- Handle custom network message safely ---
+                if (msg == Network.SIoMsg && lParam != IntPtr.Zero)
+                {
+                    GCHandle handle;
+                    try
+                    {
+                        handle = GCHandle.FromIntPtr(lParam);
+                    }
+                    catch
+                    {
+                        Logger.Verbose("Invalid GCHandle in WndProc, skipping.");
+                        handled = true;
+                        return IntPtr.Zero;
+                    }
 
+                    if (handle.Target is Network.Request req)
+                    {
+                        Network.HandleIoProgress(req);
+
+                        // --- Safely free GCHandle only once ---
+                        if (req.Completed && req.Handle?.IsAllocated == true)
+                        {
+                            try
+                            {
+                                req.Handle.Value.Free();
+                                Logger.Verbose($"WndProc freed GCHandle for requestId={req.Id}");
+                            }
+                            catch
+                            {
+                                Logger.Verbose($"WndProc: GCHandle already freed for requestId={req.Id}");
+                            }
+                            finally
+                            {
+                                req.Handle = null;
+                            }
+                        }
+                        else
+                        {
+                            req.ReadyEvent.Set();
+                        }
+                    }
+
+                    handled = true;
+                    return IntPtr.Zero;
+                }
+
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"WndProc exception: {ex}");
+            }
 
             return IntPtr.Zero;
         }
@@ -170,7 +201,7 @@ namespace ffrunner
 
                     var nextWindow = PluginBootstrap.s_npWindow;
                     nextWindow.window = PluginBootstrap.s_hwnd;
-                    nextWindow.type = Structs.NPWindowType.Window;
+                    nextWindow.type = (uint)Structs.NPWindowType.Window;
                     nextWindow.clipRect.top = 0;
                     nextWindow.clipRect.left = 0;
 
@@ -182,8 +213,8 @@ namespace ffrunner
                     else if (PluginBootstrap.s_hwnd != IntPtr.Zero &&
                              GetClientRect(PluginBootstrap.s_hwnd, out var rect))
                     {
-                        nextWindow.x = rect.left;
-                        nextWindow.y = rect.top;
+                        nextWindow.x = (uint)rect.left;
+                        nextWindow.y = (uint)rect.top;
                         nextWindow.width = (uint)Math.Max(0, rect.right - rect.left);
                         nextWindow.height = (uint)Math.Max(0, rect.bottom - rect.top);
                         nextWindow.clipRect.right = (ushort)Math.Min(ushort.MaxValue, nextWindow.width);
@@ -238,7 +269,7 @@ namespace ffrunner
                 y = 0,
                 width = (uint)widthPx,
                 height = (uint)heightPx,
-                type = Structs.NPWindowType.Window,
+                type = (uint)Structs.NPWindowType.Window,
                 clipRect = new Structs.NPRect
                 {
                     top = 0,

@@ -469,12 +469,23 @@ public static class Network
 
                 if (req.InMemoryData != null)
                 {
-                    toRead = Math.Min(toRead, req.InMemoryData.Length - req.InMemoryOffset);
-                    toRead = Math.Min(toRead, req.Buffer.Length);
-                    Buffer.BlockCopy(req.InMemoryData, req.InMemoryOffset, req.Buffer, 0, toRead);
-                    req.InMemoryOffset += toRead;
+                    var remaining = req.InMemoryData.Length - req.InMemoryOffset;
+                    if (remaining > 0)
+                    {
+                        var toCopy = Math.Min(req.Buffer.Length, remaining);
+                        Buffer.BlockCopy(req.InMemoryData, req.InMemoryOffset, req.Buffer, 0, toCopy);
+                        req.InMemoryOffset += toCopy;
+                        req.WriteSize = toCopy;
+                    }
+                    else
+                    {
+                        req.Done = true;
+                        req.DoneReason = NPRES_DONE;
+                    }
+                    return;
                 }
-                else if (req.Source?.Stream != null)
+
+                if (req.Source?.Stream != null)
                 {
                     toRead = Math.Min(toRead, req.Buffer.Length);
                     toRead = await req.Source.Stream.ReadAsync(req.Buffer.AsMemory(0, toRead), ct);
@@ -803,38 +814,28 @@ public static class Network
             if (fileName == "logininfo.php")
             {
                 var addr = App.Args.ServerAddress ?? string.Empty;
-                Logger.Log($"[Network] loginInfo.php -> '{addr}'");
                 content = Encoding.ASCII.GetBytes(addr + "\n");
                 return true;
             }
 
             if (fileName == "assetinfo.php")
             {
-                // Build the AssetInfo exactly like the native requests.c does
-                AssetInfo info = new AssetInfo
-                {
-                    Name = "",                          // typically empty
-                    Url = EnsureTrailingSlash(App.Args.AssetUrl ?? ""),     // loader asset base URL
-                    Size = 0,
-                    Flags = 0
-                };
-
-                int structSize = Marshal.SizeOf<AssetInfo>();
-                content = new byte[structSize];
-
-                IntPtr ptr = Marshal.AllocHGlobal(structSize);
-                try
-                {
-                    Marshal.StructureToPtr(info, ptr, false);
-                    Marshal.Copy(ptr, content, 0, structSize);
-                }
-                finally
-                {
-                    Marshal.FreeHGlobal(ptr);
-                }
-
-                Logger.Log($"[Network] assetInfo.php served as AssetInfo struct: Url='{info.Url}'");
+                var assetUrl = App.Args.AssetUrl ?? string.Empty;
+                content = Encoding.ASCII.GetBytes(assetUrl + "\n");
                 return true;
+            }
+
+            // 🔥 Add these cases for images
+            if (fileName == "unity-loadingbar.png" ||
+                fileName == "unity-loadingframe.png" ||
+                fileName == "unity-dexlabs.png")
+            {
+                var path = Path.Combine(AppContext.BaseDirectory, "assets", "img", fileName);
+                if (File.Exists(path))
+                {
+                    content = File.ReadAllBytes(path);
+                    return true;
+                }
             }
         }
         catch (Exception ex)
@@ -845,6 +846,7 @@ public static class Network
         content = Array.Empty<byte>();
         return false;
     }
+
 
     private static string EnsureTrailingSlash(string url)
     {

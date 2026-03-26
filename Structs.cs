@@ -126,15 +126,22 @@ namespace ffrunner
             public IntPtr urlredirectresponse;
         }
 
-        [StructLayout(LayoutKind.Sequential, Pack = 4)]
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPP_t
         {
             public IntPtr pdata;
             public IntPtr ndata;
         }
 
-        // Matches npapi.h (uint16 top/left/bottom/right)
-        [StructLayout(LayoutKind.Sequential, Pack = 4)]
+
+        // Matches npapi.h values (Window=1, Drawable=2)
+        public enum NPWindowType: uint
+        {
+            Window = 1,
+            Drawable = 2,
+        }
+
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]  // Pack must match native C
         public struct NPRect
         {
             public ushort top;
@@ -143,27 +150,19 @@ namespace ffrunner
             public ushort right;
         }
 
-        // Matches npapi.h values (Window=1, Drawable=2)
-        public enum NPWindowType
-        {
-            Window = 1,
-            Drawable = 2,
-        }
-
-        // Matches npapi.h layout: clipRect then type (type is LAST)
-        [StructLayout(LayoutKind.Sequential, Pack = 4)]
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPWindow
         {
-            public IntPtr window;
-            public int x;
-            public int y;
+            public IntPtr window;   // HWND
+            public uint x;
+            public uint y;
             public uint width;
             public uint height;
+            public uint type;       // must match native enum size
             public NPRect clipRect;
-            public NPWindowType type;
         }
 
-        [StructLayout(LayoutKind.Sequential, Pack = 4)]
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPVariant
         {
             public NPVariantType type; // 4 bytes
@@ -183,7 +182,7 @@ namespace ffrunner
         }
 
 
-        [StructLayout(LayoutKind.Sequential, Pack = 4)]
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPSavedData
         {
             public int len;
@@ -201,7 +200,7 @@ namespace ffrunner
             Object = 6,
         }
 
-        [StructLayout(LayoutKind.Sequential, Pack = 4)]
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPString
         {
             public IntPtr UTF8Characters;
