@@ -46,7 +46,6 @@ namespace ffrunner
             }
         }
 
-
         protected override void OnStartup(StartupEventArgs e)
         {
             base.OnStartup(e);
@@ -56,65 +55,39 @@ namespace ffrunner
             ShutdownMode = ShutdownMode.OnMainWindowClose;
 
             Args = ParseArgs(e.Args);
-
             Logger.Init(Args.LogPath, Args.VerboseLogging);
-            Logger.Log($"ProcessPath: {Environment.ProcessPath}");
-            Logger.Log($"AppContext.BaseDirectory: {AppContext.BaseDirectory}");
-            Logger.Log($"Initial CurrentDirectory: {Environment.CurrentDirectory}");
-            Logger.Log($"Configured LogPath: {Args.LogPath}");
-            Logger.Log($"Raw args: {(e.Args.Length == 0 ? "(none)" : string.Join(" | ", e.Args))}");
 
+            // === Load the plugin BEFORE creating window ===
             SetDependencies(Args);
             ApplyVramFix();
 
+            // Now create the window
             mainWindow = new MainWindow(Args);
             MainWindow = mainWindow;
-            mainWindow.Show();
-            // Apply DPI scaling
-            var source = PresentationSource.FromVisual(App.mainWindow);
-            double dpiX = 1.0, dpiY = 1.0;
-            if (source?.CompositionTarget != null)
+
+            try
             {
-                dpiX = source.CompositionTarget.TransformToDevice.M11;
-                dpiY = source.CompositionTarget.TransformToDevice.M22;
-            }
+                App.Args.AssetUrl = @"C:\Users\Mark Morrison\Desktop\OpenFusion\OpenFusionLauncher\offline_cache\6543a2bb-d154-4087-b9ee-3c8aa778580a\";
+                App.Args.MainPathOrAddress = @"C:\Users\Mark Morrison\Desktop\OpenFusion\OpenFusionLauncher\offline_cache\6543a2bb-d154-4087-b9ee-3c8aa778580a\main.unity3d";
+                App.Args.ServerAddress = "127.0.0.1:8023";
+                App.Args.TegId = "mlegend123";
+                App.Args.AuthId = "mlegend123";
+                NormalizeLocalPaths(App.Args);
+                // Before showing the window or initializing the plugin
+                PluginMemory.InitMemory(
+                    App.Args.AssetUrl,
+                    App.Args.MainPathOrAddress,
+                    App.Args.TegId,
+                    App.Args.AuthId
+                );
 
-            // --- Handle fullscreen ---
-            if (App.Args.Fullscreen)
+                // Now the plugin can read MemoryBlock directly like requests.c does
+                mainWindow.Show();
+            }
+            catch (Exception ex)
             {
-                App.mainWindow.WindowStyle = WindowStyle.None;
-                App.mainWindow.ResizeMode = ResizeMode.NoResize;
-                App.mainWindow.Topmost = true;
-
-                App.mainWindow.Left = 0;
-                App.mainWindow.Top = 0;
-
-                var widthPx = (int)SystemParameters.PrimaryScreenWidth;
-                var heightPx = (int)SystemParameters.PrimaryScreenHeight;
-
-                App.mainWindow.Width = widthPx / dpiX;
-                App.mainWindow.Height = heightPx / dpiY;
+                Logger.Log($"MainWindow.Show failed: {ex}");
             }
-            else
-            {
-                App.mainWindow.WindowStyle = WindowStyle.SingleBorderWindow;
-                App.mainWindow.ResizeMode = ResizeMode.CanResize;
-                App.mainWindow.Topmost = false;
-
-                // Use App.Args if provided, fallback to defaults
-                var argWidth = App.Args.WindowWidth > 0 ? App.Args.WindowWidth : 1280;
-                var argHeight = App.Args.WindowHeight > 0 ? App.Args.WindowHeight : 720;
-                
-                App.mainWindow.Width = argWidth / dpiX;
-                App.mainWindow.Height = argHeight / dpiY;
-
-                App.mainWindow.Left = 100;
-                App.mainWindow.Top = 100;
-            }
-
-            // Force layout update so ActualWidth/ActualHeight are correct
-            App.mainWindow.UpdateLayout();
-            
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -139,23 +112,23 @@ namespace ffrunner
             try
             {
                 ulong vramBytes = 0;
-                IntPtr primaryMonitor = MonitorFromPoint(new POINT { X = 0, Y = 0 }, MONITOR_DEFAULTTOPRIMARY);
+                var primaryMonitor = MonitorFromPoint(new POINT { X = 0, Y = 0 }, MONITOR_DEFAULTTOPRIMARY);
 
-                using IDXGIFactory1 factory = CreateDXGIFactory1<IDXGIFactory1>();
+                using var factory = CreateDXGIFactory1<IDXGIFactory1>();
 
                 for (uint i = 0; ; i++)
                 {
-                    var adapterResult = factory.EnumAdapters(i, out IDXGIAdapter adapter);
+                    var adapterResult = factory.EnumAdapters(i, out var adapter);
                     if (adapterResult.Failure || adapter == null)
                         break;
 
                     using (adapter)
                     {
-                        bool isPrimaryAdapter = false;
+                        var isPrimaryAdapter = false;
 
                         for (uint j = 0; ; j++)
                         {
-                            var outputResult = adapter.EnumOutputs(j, out IDXGIOutput output);
+                            var outputResult = adapter.EnumOutputs(j, out var output);
                             if (outputResult.Failure || output == null)
                                 break;
 
@@ -182,7 +155,7 @@ namespace ffrunner
                     return;
                 }
 
-                ulong vramMegabytes = vramBytes >> 20;
+                var vramMegabytes = vramBytes >> 20;
                 Logger.Log($"VRAM size: {vramBytes} bytes ({vramMegabytes} MB)");
                 Environment.SetEnvironmentVariable("UNITY_FF_VRAM_MB", vramMegabytes.ToString());
                 Logger.Log($"setenv(\"UNITY_FF_VRAM_MB\", \"{vramMegabytes}\")");
@@ -196,7 +169,7 @@ namespace ffrunner
         private static void SetUnityEnvironment(Arguments parsed)
         {
             Logger.Log($"SetUnityEnvironment entered with main='{parsed.MainPathOrAddress}', assetUrl='{parsed.AssetUrl}', address='{parsed.ServerAddress}'");
-            string launcherHome = SelectLauncherHomeDirectory();
+            var launcherHome = SelectLauncherHomeDirectory();
             RebaseOfflineCachePaths(parsed, launcherHome);
             Environment.CurrentDirectory = launcherHome;
 
@@ -231,11 +204,11 @@ namespace ffrunner
 
             static string? TryGetOfflineCacheRelativePath(string fullPath)
             {
-                string normalized = Path.GetFullPath(fullPath)
+                var normalized = Path.GetFullPath(fullPath)
                     .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
-                string marker = Path.DirectorySeparatorChar + "offline_cache" + Path.DirectorySeparatorChar;
-                int idx = normalized.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                var marker = Path.DirectorySeparatorChar + "offline_cache" + Path.DirectorySeparatorChar;
+                var idx = normalized.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
                 if (idx < 0)
                     return null;
 
@@ -244,20 +217,20 @@ namespace ffrunner
 
             static string Rebase(string? originalValue, string launcherRoot, bool expectDirectory)
             {
-                string? localPath = TryGetLocalPath(originalValue);
+                var localPath = TryGetLocalPath(originalValue);
                 if (string.IsNullOrWhiteSpace(localPath))
                     return originalValue ?? string.Empty;
 
-                string? relative = TryGetOfflineCacheRelativePath(localPath);
+                var relative = TryGetOfflineCacheRelativePath(localPath);
                 if (string.IsNullOrWhiteSpace(relative))
                     return originalValue ?? string.Empty;
 
-                string candidate = Path.Combine(launcherRoot, relative);
-                bool exists = expectDirectory ? Directory.Exists(candidate) : File.Exists(candidate);
+                var candidate = Path.Combine(launcherRoot, relative);
+                var exists = expectDirectory ? Directory.Exists(candidate) : File.Exists(candidate);
                 if (!exists)
                     return originalValue ?? string.Empty;
 
-                string rebased = new Uri(expectDirectory && !candidate.EndsWith(Path.DirectorySeparatorChar)
+                var rebased = new Uri(expectDirectory && !candidate.EndsWith(Path.DirectorySeparatorChar)
                     ? candidate + Path.DirectorySeparatorChar
                     : candidate).AbsoluteUri;
 
@@ -283,7 +256,7 @@ namespace ffrunner
                 if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
                     return false;
 
-                string imgDir = Path.Combine(root, "assets", "img");
+                var imgDir = Path.Combine(root, "assets", "img");
                 return File.Exists(Path.Combine(imgDir, "unity-dexlabs.png"))
                     && File.Exists(Path.Combine(imgDir, "unity-loadingbar.png"))
                     && File.Exists(Path.Combine(imgDir, "unity-loadingframe.png"));
@@ -303,8 +276,8 @@ namespace ffrunner
                 if (string.IsNullOrWhiteSpace(path))
                     return null;
 
-                string fullPath = Path.GetFullPath(path);
-                DirectoryInfo? dir = Directory.Exists(fullPath)
+                var fullPath = Path.GetFullPath(path);
+                var dir = Directory.Exists(fullPath)
                     ? new DirectoryInfo(fullPath)
                     : Directory.GetParent(fullPath);
 
@@ -319,12 +292,12 @@ namespace ffrunner
                 return null;
             }
 
-            string current = Environment.CurrentDirectory;
-            string baseDir = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            string? baseParent = Directory.GetParent(baseDir)?.FullName;
-            string resourcesApp = Path.Combine(baseDir, "resources", "app");
-            string? fromMain = TryGetLauncherRootFromOfflineCachePath(Args.MainPathOrAddress);
-            string? fromAssets = TryGetLauncherRootFromOfflineCachePath(Args.AssetUrl);
+            var current = Environment.CurrentDirectory;
+            var baseDir = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var baseParent = Directory.GetParent(baseDir)?.FullName;
+            var resourcesApp = Path.Combine(baseDir, "resources", "app");
+            var fromMain = TryGetLauncherRootFromOfflineCachePath(Args.MainPathOrAddress);
+            var fromAssets = TryGetLauncherRootFromOfflineCachePath(Args.AssetUrl);
 
             string[] candidates =
             {
@@ -336,7 +309,7 @@ namespace ffrunner
                 fromAssets ?? string.Empty,
             };
 
-            foreach (string candidate in candidates)
+            foreach (var candidate in candidates)
             {
                 if (string.IsNullOrWhiteSpace(candidate))
                     continue;
@@ -358,13 +331,13 @@ namespace ffrunner
             Logger.Log($"ParseArgs entered argc={args.Length}");
             var parsed = new Arguments();
 
-            for (int i = 0; i < args.Length; i++)
+            for (var i = 0; i < args.Length; i++)
             {
-                string arg = args[i];
-                string option = arg;
+                var arg = args[i];
+                var option = arg;
                 string? inlineValue = null;
 
-                int equalsIndex = arg.IndexOf('=');
+                var equalsIndex = arg.IndexOf('=');
                 if (equalsIndex > 0)
                 {
                     option = arg.Substring(0, equalsIndex);
@@ -408,9 +381,9 @@ namespace ffrunner
                     case "--token":
                         parsed.AuthId = NextValue() ?? parsed.AuthId; break;
                     case "--width":
-                        if (int.TryParse(NextValue(), out int w)) parsed.WindowWidth = w; break;
+                        if (int.TryParse(NextValue(), out var w)) parsed.WindowWidth = w; break;
                     case "--height":
-                        if (int.TryParse(NextValue(), out int h)) parsed.WindowHeight = h; break;
+                        if (int.TryParse(NextValue(), out var h)) parsed.WindowHeight = h; break;
                     case "--fullscreen":
                         parsed.Fullscreen = true; break;
                     case "--loader-images":
@@ -469,12 +442,12 @@ namespace ffrunner
             // If it's a rooted filesystem path, force file:///
             if (Path.IsPathRooted(value))
             {
-                string full = Path.GetFullPath(value);
+                var full = Path.GetFullPath(value);
                 if (ensureTrailingSlash && Directory.Exists(full) && !full.EndsWith(Path.DirectorySeparatorChar) &&
                     !full.EndsWith(Path.AltDirectorySeparatorChar))
                     full += Path.DirectorySeparatorChar;
 
-                string rooted = new Uri(full).AbsoluteUri.Replace("%20", " ");
+                var rooted = new Uri(full).AbsoluteUri.Replace("%20", " ");
                 Logger.Log($"NormalizePathOrUrl rooted -> '{rooted}'");
                 
                 return rooted;
@@ -484,12 +457,12 @@ namespace ffrunner
             {
                 if (uri.IsFile)
                 {
-                    string path = uri.LocalPath;
+                    var path = uri.LocalPath;
                     if (ensureTrailingSlash && Directory.Exists(path) && !path.EndsWith(Path.DirectorySeparatorChar) &&
                         !path.EndsWith(Path.AltDirectorySeparatorChar))
                         path += Path.DirectorySeparatorChar;
 
-                    string fileUri = new Uri(path).AbsoluteUri;
+                    var fileUri = new Uri(path).AbsoluteUri;
                     Logger.Log($"NormalizePathOrUrl file uri -> '{fileUri}'");
                     return fileUri;
                 }
@@ -512,7 +485,7 @@ namespace ffrunner
                 var shcore = LoadLibrary("loader\\SHCore.dll");
                 if (shcore != IntPtr.Zero)
                 {
-                    int result = SetProcessDpiAwareness(ProcessDpiAwareness.PROCESS_PER_MONITOR_DPI_AWARE);
+                    var result = SetProcessDpiAwareness(ProcessDpiAwareness.PROCESS_PER_MONITOR_DPI_AWARE);
 
                     Logger.Log(result == SOk
                         ? "Set DPI awareness to PROCESS_PER_MONITOR_DPI_AWARE"

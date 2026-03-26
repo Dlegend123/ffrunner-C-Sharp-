@@ -19,11 +19,7 @@ namespace ffrunner
         {
             Logger.Log(
                 $"MainWindow ctor entered width={args.WindowWidth}, height={args.WindowHeight}, fullscreen={args.Fullscreen}");
-            Initialized += (_, _) => Logger.Log("MainWindow Initialized event");
-            SourceInitialized += (_, _) => Logger.Log("MainWindow SourceInitialized event");
-            ContentRendered += (_, _) => Logger.Log("MainWindow ContentRendered event");
-            Loaded += (_, _) => Logger.Log("MainWindow Loaded event");
-            Activated += (_, _) => Logger.Log("MainWindow Activated event");
+            
             InitializeComponent();
             this.Width = args.WindowWidth;
             this.Height = args.WindowHeight;
@@ -32,33 +28,16 @@ namespace ffrunner
             {
                 WindowStyle = WindowStyle.None;
                 ResizeMode = ResizeMode.NoResize;
-                WindowState = WindowState.Maximized;
                 Topmost = true;
+                WindowState = WindowState.Maximized; // WPF fullscreen
             }
+
+            SourceInitialized += OnSourceInitialized; // Hook HWND ready
 
             Logger.Log(
                 $"MainWindow ctor completed ActualWidth={Width}, ActualHeight={Height}, WindowState={WindowState}");
         }
-
-        private void Window_Loaded(object sender, RoutedEventArgs e)
-        {
-            Logger.Log("Window_Loaded handler entered");
-            IntPtr hwnd = new WindowInteropHelper(this).Handle;
-            Logger.Log($"Window_Loaded entered hwnd=0x{hwnd.ToString("x")}");
-            _hwndSource = HwndSource.FromHwnd(hwnd);
-            _hwndSource?.AddHook(WndProc);
-
-            try
-            {
-                PluginBootstrap.StartPlugin(hwnd);
-            }
-            catch (Exception ex)
-            {
-            //    Logger.Log($"StartPlugin failed: {ex}");
-      
-            }
-        }
-
+        
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
 
@@ -128,7 +107,7 @@ namespace ffrunner
                 var setwindow = Marshal.GetDelegateForFunctionPointer<NPAPIProcs.NPP_SetWindow_Unmanaged_Cdecl>(
                     PluginBootstrap.pluginFuncs.setwindow
                 );
-                short ret = setwindow(PluginBootstrap.nppUnmanagedPtr, ref PluginBootstrap.s_npWindow);
+                var ret = setwindow(PluginBootstrap.nppUnmanagedPtr, ref PluginBootstrap.s_npWindow);
                 Logger.Verbose($"RedrawPlugin: NPP_SetWindow returned {ret}");
             }
         }
@@ -185,7 +164,7 @@ namespace ffrunner
 
                     PluginBootstrap.s_hwnd = hwnd != IntPtr.Zero ? hwnd : PluginBootstrap.s_hwnd;
 
-                    Structs.NPWindow nextWindow = PluginBootstrap.s_npWindow;
+                    var nextWindow = PluginBootstrap.s_npWindow;
                     nextWindow.window = PluginBootstrap.s_hwnd;
                     nextWindow.type = Structs.NPWindowType.Window;
                     nextWindow.clipRect.top = 0;
@@ -223,7 +202,7 @@ namespace ffrunner
                     var setwindow =
                         Marshal.GetDelegateForFunctionPointer<NPAPIProcs.NPP_SetWindow_Unmanaged_Cdecl>(PluginBootstrap
                             .pluginFuncs.setwindow);
-                    short ret = setwindow(PluginBootstrap.nppUnmanagedPtr, ref PluginBootstrap.s_npWindow);
+                    var ret = setwindow(PluginBootstrap.nppUnmanagedPtr, ref PluginBootstrap.s_npWindow);
                     Logger.Log($"NotifyWindowChanged: NPP_SetWindow returned {ret}");
 
                     lock (PluginBootstrap.s_windowChangeLock)
@@ -271,7 +250,7 @@ namespace ffrunner
                 var setwindow =
                     Marshal.GetDelegateForFunctionPointer<NPAPIProcs.NPP_SetWindow_Unmanaged_Cdecl>(PluginBootstrap
                         .pluginFuncs.setwindow);
-                short ret = setwindow(PluginBootstrap.nppUnmanagedPtr, ref PluginBootstrap.s_npWindow);
+                var ret = setwindow(PluginBootstrap.nppUnmanagedPtr, ref PluginBootstrap.s_npWindow);
                 Logger.Log($"Set NPWindow: {widthPx}x{heightPx}, NPP_SetWindow returned {ret}");
                 App.mainWindow.UpdateLayout();
             }
@@ -307,7 +286,7 @@ namespace ffrunner
                 var setwindow =
                     Marshal.GetDelegateForFunctionPointer<NPAPIProcs.NPP_SetWindow_Unmanaged_Cdecl_Ptr>(PluginBootstrap
                         .pluginFuncs.setwindow);
-                short ret = setwindow(PluginBootstrap.nppUnmanagedPtr, IntPtr.Zero);
+                var ret = setwindow(PluginBootstrap.nppUnmanagedPtr, IntPtr.Zero);
                 Logger.Log($"NotifyWindowClosed: NPP_SetWindow(NULL) returned {ret}");
             }
             catch (Exception ex)
@@ -332,7 +311,7 @@ namespace ffrunner
                         Marshal.WriteIntPtr(PluginBootstrap.s_savedDataPtrPtr, PluginBootstrap.s_savedDataPtr);
                     }
 
-                    short destroyRet = NPAPIStubs.Plugin_Destroy(PluginBootstrap.nppUnmanagedPtr,
+                    var destroyRet = NPAPIStubs.Plugin_Destroy(PluginBootstrap.nppUnmanagedPtr,
                         PluginBootstrap.s_savedDataPtrPtr);
                     Logger.Log($"NPP_Destroy returned {destroyRet}");
                 }
@@ -409,6 +388,27 @@ namespace ffrunner
             Logger.Log("FreeInitBuffers completed");
         }
 
+        private void OnSourceInitialized(object? sender, EventArgs e)
+        {
+            Logger.Log("OnSourceInitialized entered");
+
+            var hwnd = new WindowInteropHelper(this).Handle;
+            Logger.Log($"HWND acquired early: 0x{hwnd.ToString("x")}");
+
+            _hwndSource = HwndSource.FromHwnd(hwnd);
+            _hwndSource?.AddHook(WndProc);
+
+            try
+            {
+                PluginBootstrap.StartPlugin(hwnd); // ✅ CORRECT TIMING
+                UpdateNPWindowFromWpfWindow();
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"StartPlugin failed: {ex}");
+            }
+
+        }
 
         protected override void OnClosed(EventArgs e)
         {

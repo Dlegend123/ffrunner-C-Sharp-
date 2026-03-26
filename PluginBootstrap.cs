@@ -57,8 +57,8 @@ namespace ffrunner
         {
             Logger.Verbose($"StringToUtf8 input='{str}'");
             str ??= "";
-            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(str + "\0");
-            IntPtr ptr = Marshal.AllocHGlobal(bytes.Length);
+            var bytes = System.Text.Encoding.UTF8.GetBytes(str + "\0");
+            var ptr = Marshal.AllocHGlobal(bytes.Length);
             Marshal.Copy(bytes, 0, ptr, bytes.Length);
             return ptr;
         }
@@ -101,12 +101,6 @@ namespace ffrunner
                 };
                 NP_GetEntryPoints(ref pluginFuncs);
 
-                App.Args.AssetUrl = @"C:\Users\Mark Morrison\Desktop\OpenFusion\OpenFusionLauncher\offline_cache\6543a2bb-d154-4087-b9ee-3c8aa778580a\";
-                App.Args.MainPathOrAddress = @"C:\Users\Mark Morrison\Desktop\OpenFusion\OpenFusionLauncher\offline_cache\6543a2bb-d154-4087-b9ee-3c8aa778580a\main.unity3d";
-                App.Args.ServerAddress = "127.0.0.1:8023";
-                App.Args.TegId = "mlegend123";
-                App.Args.AuthId = "mlegend123";
-
                 // Allocate persistent unmanaged copy (with padding) BEFORE NP_Initialize
 
                 // Build argn / argp
@@ -122,12 +116,11 @@ namespace ffrunner
                     App.Args.WindowWidth.ToString(),
                     App.Args.WindowHeight.ToString(),
                     "000000", "000000", "true", "ccffff",
-                    App.NormalizePathOrUrl("assets/img/unity-dexlabs.png", true),
-                    App.NormalizePathOrUrl("assets/img/unity-loadingbar.png", true),
-                    App.NormalizePathOrUrl("assets/img/unity-loadingframe.png", true)
+                    "assets/img/unity-dexlabs.png",
+                    "assets/img/unity-loadingbar.png",
+                    "assets/img/unity-loadingframe.png"
                 };
-                
-                App.NormalizeLocalPaths(App.Args);
+
                 InitPluginDelegates(pluginFuncs);
                 Network.InitNetwork(App.Args.MainPathOrAddress ?? string.Empty);
 
@@ -141,9 +134,9 @@ namespace ffrunner
                 // Allocate pointer arrays (NULL-terminated) for native plugin
                 argnUnmanaged = Marshal.AllocHGlobal(IntPtr.Size * (argnPtrs.Length + 1));
                 argpUnmanaged = Marshal.AllocHGlobal(IntPtr.Size * (argpPtrs.Length + 1));
-                for (int i = 0; i < argnPtrs.Length; i++) Marshal.WriteIntPtr(argnUnmanaged, i * IntPtr.Size, argnPtrs[i]);
+                for (var i = 0; i < argnPtrs.Length; i++) Marshal.WriteIntPtr(argnUnmanaged, i * IntPtr.Size, argnPtrs[i]);
                 Marshal.WriteIntPtr(argnUnmanaged, argnPtrs.Length * IntPtr.Size, IntPtr.Zero);
-                for (int i = 0; i < argpPtrs.Length; i++) Marshal.WriteIntPtr(argpUnmanaged, i * IntPtr.Size, argpPtrs[i]);
+                for (var i = 0; i < argpPtrs.Length; i++) Marshal.WriteIntPtr(argpUnmanaged, i * IntPtr.Size, argpPtrs[i]);
                 Marshal.WriteIntPtr(argpUnmanaged, argpPtrs.Length * IntPtr.Size, IntPtr.Zero);
 
                 // Allocate NPP_t
@@ -164,7 +157,7 @@ namespace ffrunner
 
                 var newpUnmanaged = Marshal.GetDelegateForFunctionPointer<NPP_New_Unmanaged_Cdecl_ShortArg>(newpPtr);
 
-                short newpRet = newpUnmanaged(mimePtr, nppUnmanagedPtr, 1,
+                var newpRet = newpUnmanaged(mimePtr, nppUnmanagedPtr, 1,
                     (short)argn.Length, argnUnmanaged,
                     argpUnmanaged, s_savedDataPtrPtr);
                 
@@ -188,9 +181,38 @@ namespace ffrunner
                 if (newpRet != 0)
                     throw new Exception($"NPP_New returned error code: {newpRet}");
                 Logger.Log($"NPP_New returned {newpRet}");
-                
+
                 // Setup NPWindow and call setwindow using unmanaged pointer-based delegate
-                MainWindow.UpdateNPWindowFromWpfWindow();
+                // ✅ HARD SET WINDOW IMMEDIATELY (NO HELPERS)
+
+                s_npWindow = new NPWindow
+                {
+                    window = hwnd, // ✅ USE EXACT HWND FROM StartPlugin
+                    x = 0,
+                    y = 0,
+                    type = NPWindowType.Window
+                };
+
+                // Get correct size
+                if (GetClientRect(hwnd, out var rect))
+                {
+                    s_npWindow.width = (uint)(rect.right - rect.left);
+                    s_npWindow.height = (uint)(rect.bottom - rect.top);
+
+                    s_npWindow.clipRect.top = 0;
+                    s_npWindow.clipRect.left = 0;
+                    s_npWindow.clipRect.right = (ushort)Math.Min(ushort.MaxValue, rect.right);
+                    s_npWindow.clipRect.bottom = (ushort)Math.Min(ushort.MaxValue, rect.bottom);
+                }
+
+                // 🚨 CALL NPP_SetWindow IMMEDIATELY
+                var setwindow = Marshal.GetDelegateForFunctionPointer<NPP_SetWindow_Unmanaged_Cdecl>(
+                    pluginFuncs.setwindow
+                );
+
+                var setRet = setwindow(nppUnmanagedPtr, ref s_npWindow);
+
+                Logger.Log($"Initial NPP_SetWindow returned {setRet}");
 
                 NPAPIStubs.FillBrowserFuncs(ref BrowserClass);
                 // Get NPN_CreateObject from NetscapeFuncs
@@ -204,7 +226,7 @@ namespace ffrunner
 
                 // Now call NPP_GetValue for scriptable object
                 var getvalue = Marshal.GetDelegateForFunctionPointer<NPP_GetValue_Unmanaged_Cdecl>(pluginFuncs.getvalue);
-                IntPtr scriptableObjectPtr = IntPtr.Zero;
+                var scriptableObjectPtr = IntPtr.Zero;
                 const int NPPVpluginScriptableNPObject = 15;
                 getvalue(nppUnmanagedPtr, NPPVpluginScriptableNPObject, ref scriptableObjectPtr);
 
@@ -223,8 +245,8 @@ namespace ffrunner
 
         private static void ValidateStructSizes()
         {
-            int sizeFuncs = Marshal.SizeOf<NPPluginFuncs>();
-            int sizeClass = Marshal.SizeOf<NPClass>();
+            var sizeFuncs = Marshal.SizeOf<NPPluginFuncs>();
+            var sizeClass = Marshal.SizeOf<NPClass>();
 
             Logger.Log($"NPPluginFuncs size={sizeFuncs}, NPClass size={sizeClass}");
 
@@ -238,7 +260,19 @@ namespace ffrunner
         [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
         [DllImport("kernel32.dll")] private static extern bool FreeLibrary(IntPtr hModule);
 
+        // Replace these:
+        // public enum NPWindowType { Window = 0, Drawable = 1 }
+        // public struct RECT { public int left, top, right, bottom; }
+        // with this Win32-only rect (for GetClientRect):
+        [StructLayout(LayoutKind.Sequential)]
+        private struct Win32Rect
+        {
+            public int left, top, right, bottom;
+        }
 
+
+        [DllImport("user32.dll")]
+        private static extern bool GetClientRect(IntPtr hWnd, out Win32Rect lpRect);
         #endregion
     }
 }

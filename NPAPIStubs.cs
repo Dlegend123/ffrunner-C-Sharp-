@@ -74,8 +74,8 @@ namespace ffrunner
                 if (!IsReadablePointer(value.UTF8Characters))
                     return $"<unreadable:0x{value.UTF8Characters:x}>";
 
-                int length = checked((int)Math.Min(value.UTF8Length, 512u));
-                byte[] bytes = new byte[length];
+                var length = checked((int)Math.Min(value.UTF8Length, 512u));
+                var bytes = new byte[length];
                 if (length > 0)
                     Marshal.Copy(value.UTF8Characters, bytes, 0, length);
 
@@ -94,14 +94,14 @@ namespace ffrunner
 
             try
             {
-                bool isInt = (identifier & 1) == 1;
+                var isInt = (identifier & 1) == 1;
                 if (isInt)
                     return $"int:{(((nint)identifier) >> 1)}";
 
                 if (!IsReadablePointer(identifier))
                     return $"ptr:0x{identifier:x}";
 
-                string text = ReadAnsiString(identifier, 128);
+                var text = ReadAnsiString(identifier, 128);
                 return string.IsNullOrEmpty(text) ? $"ptr:0x{identifier.ToString("x")}" : $"str:'{text}'";
             }
             catch (Exception ex)
@@ -160,7 +160,7 @@ namespace ffrunner
             if (!IsReadablePointer(identifier))
                 return false;
 
-            string actual = ReadAnsiString(identifier, 128);
+            var actual = ReadAnsiString(identifier, 128);
             return string.Equals(actual, expected, StringComparison.Ordinal);
         }
 
@@ -231,11 +231,11 @@ namespace ffrunner
 
             try
             {
-                int size = Marshal.SizeOf<Structs.NPVariant>();
+                var size = Marshal.SizeOf<Structs.NPVariant>();
                 string[] parts = new string[argCount];
-                for (int i = 0; i < argCount; i++)
+                for (var i = 0; i < argCount; i++)
                 {
-                    IntPtr current = IntPtr.Add(argsPtr, i * size);
+                    var current = IntPtr.Add(argsPtr, i * size);
                     parts[i] = DescribeNPVariantPtr(current);
                 }
 
@@ -292,7 +292,7 @@ namespace ffrunner
 
             // Fallback: allocate a new NPObject
             var npobj = new NPObject { _class = aClass, referenceCount = 1 };
-            IntPtr p = Marshal.AllocHGlobal(Marshal.SizeOf<NPObject>());
+            var p = Marshal.AllocHGlobal(Marshal.SizeOf<NPObject>());
             Marshal.StructureToPtr(npobj, p, false);
 
             lock (s_allocatedObjectPtrs)
@@ -332,7 +332,7 @@ namespace ffrunner
                         referenceCount = 1,
                     };
 
-                    IntPtr p = Marshal.AllocHGlobal(Marshal.SizeOf<NPObject>());
+                    var p = Marshal.AllocHGlobal(Marshal.SizeOf<NPObject>());
                     Marshal.StructureToPtr(npobj, p, false);
 
                     lock (s_allocatedObjectPtrs)
@@ -593,8 +593,8 @@ namespace ffrunner
                 {
                     try
                     {
-                        string url = ReadAnsiString(urlPtr);
-                        string window = ReadAnsiString(windowPtr);
+                        var url = ReadAnsiString(urlPtr);
+                        var window = ReadAnsiString(windowPtr);
                         Logger.Log($"NPN_GetURL url='{url}', window='{window}'");
                         Network.RegisterGetRequest(url, false, IntPtr.Zero);
                     }
@@ -617,16 +617,16 @@ namespace ffrunner
                         {
                             Logger.Log(
                                 $"NPN_PostURL called urlPtr=0x{urlPtr.ToString("x")}, windowPtr=0x{windowPtr.ToString("x")}, len={len}, buf=0x{buf.ToString("x")}, file={file}");
-                            string url = ReadAnsiString(urlPtr);
-                            string window = ReadAnsiString(windowPtr);
+                            var url = ReadAnsiString(urlPtr);
+                            var window = ReadAnsiString(windowPtr);
                             Logger.Log(
                                 $"NPN_PostURL url='{url}', window='{window}', len={len}, file={file}, buf=0x{buf.ToString("x")}");
 
-                            byte[] data = Array.Empty<byte>();
-                            uint safeLen = Math.Min(len, 0x1000u);
+                            var data = Array.Empty<byte>();
+                            var safeLen = Math.Min(len, 0x1000u);
                             if (safeLen > 0 && buf != IntPtr.Zero && IsReadablePointer(buf))
                             {
-                                int n = checked((int)safeLen);
+                                var n = checked((int)safeLen);
                                 data = new byte[n];
                                 Marshal.Copy(buf, data, 0, n);
                             }
@@ -660,8 +660,8 @@ namespace ffrunner
                     {
                         try
                         {
-                            string url = ReadAnsiString(urlPtr);
-                            string window = ReadAnsiString(windowPtr);
+                            var url = ReadAnsiString(urlPtr);
+                            var window = ReadAnsiString(windowPtr);
                             Logger.Log(
                                 $"NPN_GetURLNotify url='{url}', window='{window}', notifyData=0x{notifyData.ToString("x")}");
 
@@ -702,16 +702,16 @@ namespace ffrunner
                     {
                         try
                         {
-                            string url = ReadAnsiString(urlPtr);
-                            string window = ReadAnsiString(windowPtr);
+                            var url = ReadAnsiString(urlPtr);
+                            var window = ReadAnsiString(windowPtr);
                             Logger.Log(
                                 $"NPN_PostURLNotify url='{url}', window='{window}', len={len}, file={file}, notifyData=0x{notifyData.ToString("x")}, buf=0x{buf.ToString("x")}");
 
-                            byte[] data = Array.Empty<byte>();
-                            uint safeLen = Math.Min(len, 0x1000u);
+                            var data = Array.Empty<byte>();
+                            var safeLen = Math.Min(len, 0x1000u);
                             if (safeLen > 0 && buf != IntPtr.Zero && IsReadablePointer(buf))
                             {
-                                int n = checked((int)safeLen);
+                                var n = checked((int)safeLen);
                                 data = new byte[n];
                                 Marshal.Copy(buf, data, 0, n);
                             }
@@ -756,7 +756,7 @@ namespace ffrunner
                         }
 
                         // if (obj->_class && obj->_class->deallocate) obj->_class->deallocate(obj); else free(obj);
-                        IntPtr classPtr = obj._class;
+                        var classPtr = obj._class;
                         if (classPtr != IntPtr.Zero && IsReadablePointer(classPtr))
                         {
                             var cls = Marshal.PtrToStructure<NPClass>(classPtr);
@@ -864,7 +864,7 @@ namespace ffrunner
                         {
                             Logger.Log(
                                 $"NPN_Evaluate obj={DescribeNPObjectRefCount(obj)}, scriptPtr=0x{scriptPtr:x}, resultPtr=0x{resultPtr:x}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
-                            string code = string.Empty;
+                            var code = string.Empty;
                             if (scriptPtr != IntPtr.Zero && IsReadablePointer(scriptPtr))
                             {
                                 try
@@ -897,8 +897,8 @@ namespace ffrunner
                             }
                             else if (code.StartsWith(AUTH_CALLBACK_SCRIPT, StringComparison.Ordinal))
                             {
-                                string teg = TryGetArgValue("tegId", "TegId", "Username", "username") ?? string.Empty;
-                                string auth = TryGetArgValue("authId", "AuthId", "token") ?? string.Empty;
+                                var teg = TryGetArgValue("tegId", "TegId", "Username", "username") ?? string.Empty;
+                                var auth = TryGetArgValue("authId", "AuthId", "token") ?? string.Empty;
 
                                 Logger.Log(
                                     $"NPN_Evaluate auth callback begin tid={Environment.CurrentManagedThreadId}, teg='{teg}', authPresent={!string.IsNullOrEmpty(auth)}");
@@ -951,7 +951,7 @@ namespace ffrunner
                 {
                     Logger.Log($"NPN_GetStringIdentifier namePtr=0x{namePtr.ToString("x")}");
                     if (namePtr == IntPtr.Zero) return IntPtr.Zero;
-                    string name = Marshal.PtrToStringUTF8(namePtr) ?? string.Empty;
+                    var name = Marshal.PtrToStringUTF8(namePtr) ?? string.Empty;
                     return NPIdentifierManager.GetStringIdentifier(name);
                 });
                 funcs.getstringidentifier = Marshal.GetFunctionPointerForDelegate(getStringId);
@@ -963,11 +963,11 @@ namespace ffrunner
                         try
                         {
                             Logger.Log($"NPN_GetStringIdentifiers nameCount={nameCount}");
-                            for (int i = 0; i < nameCount; i++)
+                            for (var i = 0; i < nameCount; i++)
                             {
-                                IntPtr namePtr = Marshal.ReadIntPtr(namesPtr, i * IntPtr.Size);
-                                string name = Marshal.PtrToStringUTF8(namePtr) ?? string.Empty;
-                                IntPtr id = NPIdentifierManager.GetStringIdentifier(name);
+                                var namePtr = Marshal.ReadIntPtr(namesPtr, i * IntPtr.Size);
+                                var name = Marshal.PtrToStringUTF8(namePtr) ?? string.Empty;
+                                var id = NPIdentifierManager.GetStringIdentifier(name);
                                 Marshal.WriteIntPtr(identifiersPtr, i * IntPtr.Size, id);
                             }
                         }
@@ -995,7 +995,7 @@ namespace ffrunner
 
                 if (!_map.TryGetValue(name, out var ptr))
                 {
-                    byte[] bytes = Encoding.ASCII.GetBytes(name + "\0");
+                    var bytes = Encoding.ASCII.GetBytes(name + "\0");
                     ptr = Marshal.AllocHGlobal(bytes.Length);
                     Marshal.Copy(bytes, 0, ptr, bytes.Length);
 
@@ -1010,9 +1010,9 @@ namespace ffrunner
         private static NPVariant MakeStringVariant(string s)
         {
             var v = new NPVariant();
-            string text = s ?? string.Empty;
-            byte[] bytes = Encoding.UTF8.GetBytes(text);
-            IntPtr p = Marshal.AllocHGlobal(bytes.Length + 1);
+            var text = s ?? string.Empty;
+            var bytes = Encoding.UTF8.GetBytes(text);
+            var p = Marshal.AllocHGlobal(bytes.Length + 1);
             Marshal.Copy(bytes, 0, p, bytes.Length);
             Marshal.WriteByte(p, bytes.Length, 0);
 
@@ -1100,7 +1100,7 @@ namespace ffrunner
             {
                 Logger.Log(
                     $"UnitySendMessageInternal entered tid={Environment.CurrentManagedThreadId}, target='{targetClass}', msg='{msg}', val={DescribeNPVariant(val)}");
-                IntPtr scriptable = PluginBootstrap.scriptableObject;
+                var scriptable = PluginBootstrap.scriptableObject;
                 if (scriptable == IntPtr.Zero || !IsReadablePointer(scriptable))
                 {
                     Logger.Log("UnitySendMessage: scriptableObject invalid");
@@ -1121,7 +1121,7 @@ namespace ffrunner
                     return;
                 }
 
-                IntPtr sendId = NPIdentifierManager.GetStringIdentifier("SendMessage");
+                var sendId = NPIdentifierManager.GetStringIdentifier("SendMessage");
                 if (sendId == IntPtr.Zero)
                 {
                     Logger.Log("UnitySendMessage: SendMessage identifier invalid");
@@ -1130,20 +1130,20 @@ namespace ffrunner
 
 
                 // --- PIN NPVariant strings to prevent GC/memory corruption ---
-                GCHandle handleTarget = GCHandle.Alloc(targetClass, GCHandleType.Pinned);
-                GCHandle handleMsg = GCHandle.Alloc(msg, GCHandleType.Pinned);
+                var handleTarget = GCHandle.Alloc(targetClass, GCHandleType.Pinned);
+                var handleMsg = GCHandle.Alloc(msg, GCHandleType.Pinned);
 
-                NPVariant[] argsManaged = new NPVariant[3];
+                var argsManaged = new NPVariant[3];
                 argsManaged[0] = MakeStringVariant(targetClass); // Already unmanaged pinned
                 argsManaged[1] = MakeStringVariant(msg);
                 argsManaged[2] = val;
 
-                int variantSize = Marshal.SizeOf<NPVariant>();
-                IntPtr argsPtr = Marshal.AllocHGlobal(variantSize * argsManaged.Length);
+                var variantSize = Marshal.SizeOf<NPVariant>();
+                var argsPtr = Marshal.AllocHGlobal(variantSize * argsManaged.Length);
 
                 try
                 {
-                    for (int i = 0; i < argsManaged.Length; i++)
+                    for (var i = 0; i < argsManaged.Length; i++)
                     {
                         Marshal.StructureToPtr(argsManaged[i], IntPtr.Add(argsPtr, i * variantSize), false);
                     }
@@ -1157,7 +1157,7 @@ namespace ffrunner
                     };
                     var resultPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPVariant>());
                     Marshal.StructureToPtr(result, resultPtr, false);
-                    bool ok = invokeDel(scriptable, sendId, argsPtr, (uint)argsManaged.Length, resultPtr);
+                    var ok = invokeDel(scriptable, sendId, argsPtr, (uint)argsManaged.Length, resultPtr);
                     Logger.Log($"UnitySendMessage invoke ok={ok}, result={DescribeNPVariantPtr(resultPtr)}");
                 }
                 finally
@@ -1271,13 +1271,13 @@ namespace ffrunner
                     return string.Empty;
 
                 var bytes = new List<byte>(Math.Min(maxBytes, 256));
-                for (int i = 0; i < maxBytes; i++)
+                for (var i = 0; i < maxBytes; i++)
                 {
-                    IntPtr current = IntPtr.Add(ptr, i);
+                    var current = IntPtr.Add(ptr, i);
                     if (!IsReadablePointer(current))
                         break;
 
-                    byte b = Marshal.ReadByte(current);
+                    var b = Marshal.ReadByte(current);
                     if (b == 0)
                         break;
 
@@ -1337,7 +1337,7 @@ namespace ffrunner
 
                 if (mbi.State != MEM_COMMIT) return false;
 
-                uint execMask = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+                var execMask = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
                 return (mbi.Protect & execMask) != 0;
             }
             catch (Exception ex)
@@ -1360,12 +1360,12 @@ namespace ffrunner
                 if (depth > 2 || !IsReadablePointer(ptr))
                     return IntPtr.Zero;
 
-                for (int i = 0; i < 4; i++)
+                for (var i = 0; i < 4; i++)
                 {
-                    IntPtr candidate = Marshal.ReadIntPtr(ptr, i * IntPtr.Size);
+                    var candidate = Marshal.ReadIntPtr(ptr, i * IntPtr.Size);
                     if (!IsReadablePointer(candidate)) continue;
 
-                    int version = Marshal.ReadInt32(candidate);
+                    var version = Marshal.ReadInt32(candidate);
                     Logger.Verbose(
                         $"TryFindClassPtr: depth={depth}, offset={i * IntPtr.Size}, candidate=0x{candidate.ToString("x")}, version={version}");
 
@@ -1374,17 +1374,17 @@ namespace ffrunner
                         return candidate;
 
                     // Heuristic: hasMethod + invoke look executable
-                    IntPtr
+                    var
                         hasMethod = Marshal.ReadIntPtr(candidate,
                             16); // structVersion(4) + allocate(4) + deallocate(4) + invalidate(4)
-                    IntPtr invoke = Marshal.ReadIntPtr(candidate, 20);
+                    var invoke = Marshal.ReadIntPtr(candidate, 20);
                     if (IsExecutablePointer(hasMethod) && IsExecutablePointer(invoke))
                     {
                         Logger.Verbose($"TryFindClassPtr: heuristic match at 0x{candidate.ToString("x")}");
                         return candidate;
                     }
 
-                    IntPtr nested = TryFindClassPtrInternal(candidate, depth + 1);
+                    var nested = TryFindClassPtrInternal(candidate, depth + 1);
                     if (nested != IntPtr.Zero)
                         return nested;
                 }
@@ -1427,7 +1427,7 @@ namespace ffrunner
                     return;
                 }
 
-                IntPtr styleId = NPIdentifierManager.GetStringIdentifier("style");
+                var styleId = NPIdentifierManager.GetStringIdentifier("style");
                 if (styleId == IntPtr.Zero)
                 {
                     Logger.Log("WarmUpScriptableObject: style identifier is NULL");
@@ -1435,7 +1435,7 @@ namespace ffrunner
                 }
 
                 var hasMethod = Marshal.GetDelegateForFunctionPointer<NPAPIProcs.NP_HasMethodDelegate>(cls.hasMethod);
-                bool ok = hasMethod(scriptable, styleId);
+                var ok = hasMethod(scriptable, styleId);
                 Logger.Log($"WarmUpScriptableObject: hasMethod('style') returned {ok}");
             }
             catch (Exception ex)
@@ -1477,7 +1477,7 @@ namespace ffrunner
                 // Fallback: maybe we got a pointer-to-pointer
                 if (s_scriptableClassPtr == IntPtr.Zero)
                 {
-                    IntPtr deref = Marshal.ReadIntPtr(scriptable);
+                    var deref = Marshal.ReadIntPtr(scriptable);
                     Logger.Log($"InitializeScriptableObject: deref=0x{deref:x}");
                     if (IsReadablePointer(deref))
                         s_scriptableClassPtr = TryFindClassPtr(deref);
