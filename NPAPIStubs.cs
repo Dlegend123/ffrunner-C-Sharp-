@@ -26,16 +26,12 @@ namespace ffrunner
         public static NPAPIProcs.NPP_SetWindow_Unmanaged_Cdecl? Plugin_SetWindow;
         public static NPAPIProcs.NPP_GetValue_Unmanaged_Cdecl? Plugin_GetValue;
         public static NPAPIProcs.NPP_URLNotifyDelegate? Plugin_UrlNotify;
-        public static NPAPIProcs.NPP_URLNotifyDelegate_Ptr? Plugin_UrlNotifyPtr;
 
         // Streaming plugin functions
         public static NPAPIProcs.NPP_NewStream_Unmanaged_Cdecl? Plugin_NewStream;
         public static NPAPIProcs.NPP_DestroyStream_Unmanaged_Cdecl? Plugin_DestroyStream;
         public static NPAPIProcs.NPP_WriteReady_Unmanaged_Cdecl? Plugin_WriteReady;
         public static NPAPIProcs.NPP_Write_Unmanaged_Cdecl? Plugin_Write;
-        public static NPAPIProcs.NPP_StreamAsFile_Unmanaged_Cdecl? Plugin_StreamAsFile;
-        public static NPAPIProcs.NPP_Print_Unmanaged_Cdecl? Plugin_Print;
-        public static NPAPIProcs.NPP_HandleEvent_Unmanaged_Cdecl? Plugin_HandleEvent;
 
         // NPObject / NPClass for browser
         public static NPObject browserObject;
@@ -541,10 +537,8 @@ namespace ffrunner
             {
                 Plugin_UrlNotify =
                     Marshal.GetDelegateForFunctionPointer<NPAPIProcs.NPP_URLNotifyDelegate>(funcs.urlnotify);
-                Plugin_UrlNotifyPtr =
-                    Marshal.GetDelegateForFunctionPointer<NPAPIProcs.NPP_URLNotifyDelegate_Ptr>(funcs.urlnotify);
                 pinnedDelegates.Add(Plugin_UrlNotify);
-                pinnedDelegates.Add(Plugin_UrlNotifyPtr);
+;
             }
 
             // Streaming functions
@@ -993,22 +987,24 @@ namespace ffrunner
         public static class NPIdentifierManager
         {
             private static readonly Dictionary<string, IntPtr> _map = new();
-            private static int _nextId = 1;
 
             public static IntPtr GetStringIdentifier(string name)
             {
-                if (string.IsNullOrEmpty(name)) return IntPtr.Zero;
+                if (string.IsNullOrEmpty(name))
+                    return IntPtr.Zero;
 
-                if (!_map.TryGetValue(name, out var id))
+                if (!_map.TryGetValue(name, out var ptr))
                 {
-                    id = (IntPtr)_nextId++;
-                    _map[name] = id;
+                    byte[] bytes = Encoding.ASCII.GetBytes(name + "\0");
+                    ptr = Marshal.AllocHGlobal(bytes.Length);
+                    Marshal.Copy(bytes, 0, ptr, bytes.Length);
+
+                    _map[name] = ptr;
                 }
 
-                return id;
+                return ptr; // ✅ REAL POINTER
             }
         }
-
 
         // Helper: create NPVariant string (tracks native allocation for later release)
         private static NPVariant MakeStringVariant(string s)

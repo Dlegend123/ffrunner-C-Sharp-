@@ -126,7 +126,7 @@ namespace ffrunner
             public IntPtr urlredirectresponse;
         }
 
-        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
         public struct NPP_t
         {
             public IntPtr pdata;
@@ -134,7 +134,7 @@ namespace ffrunner
         }
 
         // Matches npapi.h (uint16 top/left/bottom/right)
-        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
         public struct NPRect
         {
             public ushort top;
@@ -149,9 +149,9 @@ namespace ffrunner
             Window = 1,
             Drawable = 2,
         }
-        
+
         // Matches npapi.h layout: clipRect then type (type is LAST)
-        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
         public struct NPWindow
         {
             public IntPtr window;
@@ -163,7 +163,7 @@ namespace ffrunner
             public NPWindowType type;
         }
 
-        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
         public struct NPVariant
         {
             public NPVariantType type; // 4 bytes
@@ -183,7 +183,7 @@ namespace ffrunner
         }
 
 
-        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
         public struct NPSavedData
         {
             public int len;
@@ -201,7 +201,7 @@ namespace ffrunner
             Object = 6,
         }
 
-        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
         public struct NPString
         {
             public IntPtr UTF8Characters;

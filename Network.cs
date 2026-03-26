@@ -145,23 +145,10 @@ public static class Network
             var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             // Register a callback that signals when ReadyEvent is set
-            ThreadPool.QueueUserWorkItem(_ =>
+            if (!req.ReadyEvent.WaitOne(20000))
             {
-                try
-                {
-                    if (req.ReadyEvent.WaitOne(20000))
-                        tcs.TrySetResult(true);
-                    else
-                        tcs.TrySetCanceled(ct);
-                }
-                catch (Exception ex)
-                {
-                    tcs.TrySetException(ex);
-                }
-            });
-
-            // Await asynchronously
-            await tcs.Task.WaitAsync(ct);
+                Logger.Log($"Network.PostRequestAsync timeout requestId={req.Id}");
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -247,13 +234,15 @@ public static class Network
                 req.BytesWritten += written;
             }
 
-            var forceManifestClose = req.Url.Contains("Manifest.resourceFile") && req.Done;
-            if (req.Failed || (req.Done && req.WritePtr >= req.WriteSize) || forceManifestClose)
+            if (req.Failed || (req.Done && req.WritePtr >= req.WriteSize))
             {
                 Plugin_DestroyStream!(nppUnmanagedPtr, req.StreamPtr, req.DoneReason);
-                Plugin_UrlNotifyPtr!(nppUnmanagedPtr, req.UrlPtr, req.DoneReason, req.NotifyData);
 
-                req.Source?.DisposeAsync().AsTask();
+                if (req.DoNotify)
+                {
+                    Plugin_UrlNotify!(nppUnmanagedPtr, req.UrlPtr, req.DoneReason, req.NotifyData);
+                }
+                req.Source?.DisposeAsync();
                 req.Source = null;
 
                 req.Completed = true;
@@ -327,7 +316,6 @@ public static class Network
         };
 
         // Logger.Log($"Network.RegisterGetRequest {DescribeRequest(req)}");
-        BeginRequest();
         Enqueue(req);
     }
 
@@ -362,6 +350,7 @@ public static class Network
     public static void Init()
     {
         EnsureWorker();
+        TryQueueMainRequest(); // ✅ ADD THIS
     }
 
     public static void Shutdown()
@@ -435,6 +424,8 @@ public static class Network
 
     private static async Task ProcessRequestAsync(Request req, CancellationToken ct)
     {
+        BeginRequest(); // ✅ MOVE HERE
+
         try
         {
             while (!req.Done)
@@ -472,43 +463,38 @@ public static class Network
     private static async Task ProgressRequestAsync(Request req, CancellationToken ct)
     {
         Logger.Log($"Network.ProgressRequestAsync requestId={req.Id}, url='{req.Url}'");
-        
-        req.WritePtr = 0;
-        req.WriteSize = 0;
+
+        if (req.WritePtr < req.WriteSize)
+            return;
 
         try
         {
-            if (req.Source?.Stream == null)
+            if (req.Source?.Stream == null && req.InMemoryData == null)
             {
                 req.Done = true;
                 req.DoneReason = NPRES_NETWORK_ERR;
                 return;
             }
 
-            var fileName = Path.GetFileName(req.Url).ToLowerInvariant();
-            if (fileName == "logininfo.php" || fileName == "assetinfo.php")
+            if (req.InMemoryData != null)
             {
-                if (req.InMemoryData != null)
+                var remaining = req.InMemoryData.Length - req.InMemoryOffset;
+                if (remaining > 0)
                 {
-                    var remaining = req.InMemoryData.Length - req.InMemoryOffset;
-                    if (remaining > 0)
-                    {
-                        var toCopy = Math.Min(req.Buffer.Length, remaining);
-                        Buffer.BlockCopy(req.InMemoryData, req.InMemoryOffset, req.Buffer, 0, toCopy);
-                        req.InMemoryOffset += toCopy;
-                        req.WriteSize = toCopy;
-                    }
-                    else
-                    {
-                        req.Done = true;
-                        req.DoneReason = NPRES_DONE;
-                    }
+                    var toCopy = Math.Min(req.Buffer.Length, remaining);
+                    Buffer.BlockCopy(req.InMemoryData, req.InMemoryOffset, req.Buffer, 0, toCopy);
+                    req.InMemoryOffset += toCopy;
+                    req.WriteSize = toCopy;
+                }
+                else
+                {
+                    req.Done = true;
+                    req.DoneReason = NPRES_DONE;
                 }
                 return;
             }
 
-
-            Logger.Log($"Network.ProgressRequestAsync reading from stream for requestId={req.Id}, url='{req.Url}'");
+            // Normal stream path
             var read = await req.Source.Stream.ReadAsync(req.Buffer.AsMemory(0, req.Buffer.Length), ct);
             req.WriteSize = read;
 
@@ -520,7 +506,6 @@ public static class Network
         }
         catch (ObjectDisposedException)
         {
-            Logger.Log($"[Network] ProgressRequestAsync stream disposed for requestId={req.Id}, url='{req.Url}'");
             req.Done = true;
             req.DoneReason = NPRES_NETWORK_ERR;
         }
@@ -529,7 +514,6 @@ public static class Network
             FailRequest(req, "ProgressRequestAsync", ex);
         }
     }
-
 
     private static async Task InitRequestAsync(Request req, CancellationToken ct)
     {
@@ -896,15 +880,28 @@ public static class Network
     public static void CompleteRequest()
     {
         var remaining = Interlocked.Decrement(ref _sActiveRequests);
+
         Logger.Log($"Network.CompleteRequest remaining={remaining}, mainRequested={_sMainRequested}");
+
+        // 🔥 FIX: reset main request flag when all done
         if (remaining == 0)
+        {
+            _sMainRequested = 0;   // ← YOU DID NOT DO THIS
             TryQueueMainRequest();
+        }
     }
 
     private static void TryQueueMainRequest()
     {
         Logger.Log($"Network.TryQueueMainRequest mainRequested={_sMainRequested}, activeRequests={_sActiveRequests}");
-        if (Interlocked.CompareExchange(ref _sMainRequested, 1, 0) != 0)
+
+        // Only queue if:
+        // - not already requested
+        // - no active requests remaining
+        if (_sMainRequested != 0)
+            return;
+
+        if (_sActiveRequests != 0)
             return;
 
         var main = App.Args.MainPathOrAddress ?? string.Empty;
@@ -912,6 +909,10 @@ public static class Network
             return;
 
         Logger.Log($"[Network] Queuing main request: {main}");
+
+        // IMPORTANT: set AFTER checks (not via CompareExchange)
+        _sMainRequested = 1;
+
         RegisterGetRequest(main, true, IntPtr.Zero);
     }
 
@@ -1057,7 +1058,7 @@ public static class Network
             Plugin_DestroyStream!(nppUnmanagedPtr, req.StreamPtr, NPRES_NETWORK_ERR);
 
             if (req.DoNotify)
-                Plugin_UrlNotifyPtr!(nppUnmanagedPtr, req.UrlPtr, NPRES_NETWORK_ERR, req.NotifyData);
+                Plugin_UrlNotify!(nppUnmanagedPtr, req.UrlPtr, NPRES_NETWORK_ERR, req.NotifyData);
 
             req.Completed = true;
             CompleteRequest();
