@@ -507,6 +507,7 @@ namespace ffrunner
 
         public static void InitPluginDelegates(NPPluginFuncs funcs)
         {
+
             Logger.Log("InitPluginDelegates entered");
             if (funcs.newp != IntPtr.Zero)
             {
@@ -582,402 +583,411 @@ namespace ffrunner
 
         public static void InitNetscapeFuncs(ref NPNetscapeFuncs funcs)
         {
-            Logger.Log($"InitNetscapeFuncs entered size={funcs.size}, version={funcs.version}");
-
-            // Helper to pin and return delegates
-            T pin<T>(T d) where T : Delegate
+            try
             {
-                pinnedDelegates.Add(d);
-                return d;
-            }
+                Logger.Log($"InitNetscapeFuncs entered size={funcs.size}, version={funcs.version}");
 
-            // NPN_GetURLProc
-            var geturlDel = pin<NPAPIProcs.NPN_GetURLDelegate>((IntPtr instance, IntPtr urlPtr, IntPtr windowPtr) =>
-            {
-                try
+                // Helper to pin and return delegates
+                T pin<T>(T d) where T : Delegate
                 {
-                    string url = ReadAnsiString(urlPtr);
-                    string window = ReadAnsiString(windowPtr);
-                    Logger.Log($"NPN_GetURL url='{url}', window='{window}'");
-                    Network.RegisterGetRequest(url, false, IntPtr.Zero);
-                }
-                catch (Exception ex)
-                {
-                    Logger.Log($"NPN_GetURL threw: {ex}");
+                    pinnedDelegates.Add(d);
+                    return d;
                 }
 
-                return 0; // NPERR_NO_ERROR
-            });
-            funcs.geturl = Marshal.GetFunctionPointerForDelegate(geturlDel);
-
-            // NPN_PostURLProc
-            var posturlDel = pin<NPAPIProcs.NPN_PostURLDelegate>(
-                (IntPtr instance, IntPtr urlPtr,
-                    IntPtr windowPtr, uint len, IntPtr buf,
-                    [MarshalAs(UnmanagedType.I1)] bool file) =>
-                {
-                    try
-                    {
-                        Logger.Log(
-                            $"NPN_PostURL called urlPtr=0x{urlPtr.ToString("x")}, windowPtr=0x{windowPtr.ToString("x")}, len={len}, buf=0x{buf.ToString("x")}, file={file}");
-                        string url = ReadAnsiString(urlPtr);
-                        string window = ReadAnsiString(windowPtr);
-                        Logger.Log(
-                            $"NPN_PostURL url='{url}', window='{window}', len={len}, file={file}, buf=0x{buf.ToString("x")}");
-
-                        byte[] data = Array.Empty<byte>();
-                        uint safeLen = Math.Min(len, 0x1000u);
-                        if (safeLen > 0 && buf != IntPtr.Zero && IsReadablePointer(buf))
-                        {
-                            int n = checked((int)safeLen);
-                            data = new byte[n];
-                            Marshal.Copy(buf, data, 0, n);
-                        }
-
-                        Network.RegisterPostRequest(url, false, IntPtr.Zero, safeLen, data);
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Log($"NPN_PostURL threw: {ex}");
-                    }
-
-                    return 0; // NPERR_NO_ERROR
-                });
-            funcs.posturl = Marshal.GetFunctionPointerForDelegate(posturlDel);
-
-            // NPN_UserAgentProc
-            userAgentPtr = userAgentHandle.AddrOfPinnedObject();
-            uagentDel = PinDelegate<NPAPIProcs.NPN_UserAgentDelegate>((IntPtr instance) =>
-            {
-                Logger.Log($"NPN_UserAgent called, returning 'ffrunner'");
-                return userAgentPtr;
-            });
-
-            funcs.uagent = Marshal.GetFunctionPointerForDelegate(uagentDel);
-            // Prepare user agent delegate and pointer
-
-
-            // NPN_GetURLNotifyProc
-            var geturlNotifyDel = pin<NPAPIProcs.NPN_GetURLNotifyDelegate>(
-                (IntPtr instance, IntPtr urlPtr, IntPtr windowPtr, IntPtr notifyData) =>
-                {
-                    try
-                    {
-                        Logger.Log($"NPN_GetURLNotify called notifyData=0x{notifyData.ToString("x")}");
-                        string url = ReadAnsiString(urlPtr);
-                        string window = ReadAnsiString(windowPtr);
-                        Logger.Log(
-                            $"NPN_GetURLNotify url='{url}', window='{window}', notifyData=0x{notifyData.ToString("x")}");
-                        Network.RegisterGetRequest(url, true, notifyData);
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Log($"NPN_GetURLNotify threw: {ex}");
-                    }
-
-                    return 0; // NPERR_NO_ERROR
-                });
-            funcs.geturlnotify = Marshal.GetFunctionPointerForDelegate(geturlNotifyDel);
-            var invokeStub = pin<NPAPIProcs.NPN_InvokeDelegate>(
-                (IntPtr npp, IntPtr obj, IntPtr methodName, IntPtr argsPtr, uint argCount, IntPtr resultPtr) =>
-                {
-                    try
-                    {
-                        Logger.Log(
-                            $"NPN_Invoke obj={DescribeNPObjectRefCount(obj)}, method={DescribeNPIdentifier(methodName)}, argc={argCount}, args={DescribeNPVariantsBuffer(argsPtr, argCount)}, resultPtr=0x{resultPtr.ToString("x")}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
-                        WriteVoidVariant(resultPtr);
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Log($"NPN_Invoke threw: {ex}");
-                    }
-
-                    return false;
-                });
-            funcs.invoke = Marshal.GetFunctionPointerForDelegate(invokeStub);
-            // NPN_PostURLNotifyProc
-            var posturlNotifyDel = pin<NPAPIProcs.NPN_PostURLNotifyDelegate>(
-                (IntPtr instance, IntPtr urlPtr,
-                    IntPtr windowPtr, uint len, IntPtr buf,
-                    [MarshalAs(UnmanagedType.I1)] bool file, IntPtr notifyData) =>
+                // NPN_GetURLProc
+                var geturlDel = pin<NPAPIProcs.NPN_GetURLDelegate>((IntPtr instance, IntPtr urlPtr, IntPtr windowPtr) =>
                 {
                     try
                     {
                         string url = ReadAnsiString(urlPtr);
                         string window = ReadAnsiString(windowPtr);
-                        Logger.Log(
-                            $"NPN_PostURLNotify url='{url}', window='{window}', len={len}, file={file}, notifyData=0x{notifyData.ToString("x")}, buf=0x{buf.ToString("x")}");
-
-                        byte[] data = Array.Empty<byte>();
-                        uint safeLen = Math.Min(len, 0x1000u);
-                        if (safeLen > 0 && buf != IntPtr.Zero && IsReadablePointer(buf))
-                        {
-                            int n = checked((int)safeLen);
-                            data = new byte[n];
-                            Marshal.Copy(buf, data, 0, n);
-                        }
-
-                        Network.RegisterPostRequest(url, true, notifyData, safeLen, data);
+                        Logger.Log($"NPN_GetURL url='{url}', window='{window}'");
+                        Network.RegisterGetRequest(url, false, IntPtr.Zero);
                     }
                     catch (Exception ex)
                     {
-                        Logger.Log($"NPN_PostURLNotify threw: {ex}");
+                        Logger.Log($"NPN_GetURL threw: {ex}");
                     }
 
                     return 0; // NPERR_NO_ERROR
                 });
-            funcs.posturlnotify = Marshal.GetFunctionPointerForDelegate(posturlNotifyDel);
+                funcs.geturl = Marshal.GetFunctionPointerForDelegate(geturlDel);
 
-            // NPN_ReleaseObjectProc
-            var releaseObj = pin<NPAPIProcs.NPN_ReleaseObjectDelegate>((IntPtr objPtr) =>
-            {
-                try
-                {
-                    Logger.Log($"NPN_ReleaseObject before obj={DescribeNPObjectRefCount(objPtr)}");
-                    if (objPtr == IntPtr.Zero) return;
-                    if (!IsReadablePointer(objPtr)) return;
-
-                    var obj = Marshal.PtrToStructure<NPObject>(objPtr);
-                    if (obj.referenceCount > 0)
-                        obj.referenceCount--;
-
-                    if (obj.referenceCount != 0)
+                // NPN_PostURLProc
+                var posturlDel = pin<NPAPIProcs.NPN_PostURLDelegate>(
+                    (IntPtr instance, IntPtr urlPtr,
+                        IntPtr windowPtr, uint len, IntPtr buf,
+                        [MarshalAs(UnmanagedType.I1)] bool file) =>
                     {
-                        Marshal.StructureToPtr(obj, objPtr, false);
-                        return;
-                    }
-
-                    // should never ask to deallocate the (statically allocated) browser object
-                    if (objPtr == s_browserObjectPtr || IsLocationObject(objPtr))
-                    {
-                        //obj.referenceCount = 1;
-                        Logger.Log($"NPN_ReleaseObject dont free browser object: {objPtr}");
-                        Marshal.StructureToPtr(obj, objPtr, false);
-                        return;
-                    }
-
-                    // if (obj->_class && obj->_class->deallocate) obj->_class->deallocate(obj); else free(obj);
-                    IntPtr classPtr = obj._class;
-                    if (classPtr != IntPtr.Zero && IsReadablePointer(classPtr))
-                    {
-                        var cls = Marshal.PtrToStructure<NPClass>(classPtr);
-                        if (cls.deallocate != IntPtr.Zero && IsExecutablePointer(cls.deallocate))
+                        try
                         {
-                            var dealloc =
-                                Marshal.GetDelegateForFunctionPointer<NPAPIProcs.NP_DeallocateDelegate>(
-                                    cls.deallocate);
-                            dealloc(objPtr);
-                            return;
+                            Logger.Log(
+                                $"NPN_PostURL called urlPtr=0x{urlPtr.ToString("x")}, windowPtr=0x{windowPtr.ToString("x")}, len={len}, buf=0x{buf.ToString("x")}, file={file}");
+                            string url = ReadAnsiString(urlPtr);
+                            string window = ReadAnsiString(windowPtr);
+                            Logger.Log(
+                                $"NPN_PostURL url='{url}', window='{window}', len={len}, file={file}, buf=0x{buf.ToString("x")}");
+
+                            byte[] data = Array.Empty<byte>();
+                            uint safeLen = Math.Min(len, 0x1000u);
+                            if (safeLen > 0 && buf != IntPtr.Zero && IsReadablePointer(buf))
+                            {
+                                int n = checked((int)safeLen);
+                                data = new byte[n];
+                                Marshal.Copy(buf, data, 0, n);
+                            }
+
+                            Network.RegisterPostRequest(url, false, IntPtr.Zero, safeLen, data);
                         }
-                    }
-
-                    // Only free objects that we allocated.
-                    bool owned;
-                    lock (s_allocatedObjectPtrs)
-                    {
-                        owned = s_allocatedObjectPtrs.Remove(objPtr);
-                    }
-
-                    if (owned)
-                        Marshal.FreeHGlobal(objPtr);
-
-                    Logger.Log($"NPN_ReleaseObject after obj=0x{objPtr.ToString("x")}, freed={owned}");
-                }
-                catch (Exception ex)
-                {
-                    Logger.Log($"NPN_ReleaseObject threw: {ex}");
-                }
-            });
-            funcs.releaseobject = Marshal.GetFunctionPointerForDelegate(releaseObj);
-
-            // NPN_GetPropertyProc
-            var getPropertyStub = pin<NPAPIProcs.NPN_GetPropertyDelegate>(
-                (IntPtr npp, IntPtr obj, IntPtr propertyName, IntPtr resultPtr) =>
-                {
-                    try
-                    {
-                        Logger.Log(
-                            $"NPN_GetProperty obj={DescribeNPObjectRefCount(obj)}, property={DescribeNPIdentifier(propertyName)}, resultPtr=0x{resultPtr.ToString("x")}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
-                        if (resultPtr != IntPtr.Zero)
+                        catch (Exception ex)
                         {
+                            Logger.Log($"NPN_PostURL threw: {ex}");
+                        }
+
+                        return 0; // NPERR_NO_ERROR
+                    });
+                funcs.posturl = Marshal.GetFunctionPointerForDelegate(posturlDel);
+
+                // NPN_UserAgentProc
+                userAgentPtr = userAgentHandle.AddrOfPinnedObject();
+                uagentDel = PinDelegate<NPAPIProcs.NPN_UserAgentDelegate>((IntPtr instance) =>
+                {
+                    Logger.Log($"NPN_UserAgent called, returning 'ffrunner'");
+                    return userAgentPtr;
+                });
+
+                funcs.uagent = Marshal.GetFunctionPointerForDelegate(uagentDel);
+                // Prepare user agent delegate and pointer
+
+
+                // NPN_GetURLNotifyProc
+                var geturlNotifyDel = pin<NPAPIProcs.NPN_GetURLNotifyDelegate>(
+                    (IntPtr instance, IntPtr urlPtr, IntPtr windowPtr, IntPtr notifyData) =>
+                    {
+                        try
+                        {
+                            string url = ReadAnsiString(urlPtr);
+                            string window = ReadAnsiString(windowPtr);
+                            Logger.Log(
+                                $"NPN_GetURLNotify url='{url}', window='{window}', notifyData=0x{notifyData.ToString("x")}");
+
+                            // Just enqueue the request with notifyData
+                            Network.RegisterGetRequest(url, true, notifyData);
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Log($"NPN_GetURLNotify threw: {ex}");
+                        }
+
+                        return 0; // NPERR_NO_ERROR
+                    });
+                funcs.geturlnotify = Marshal.GetFunctionPointerForDelegate(geturlNotifyDel);
+
+                var invokeStub = pin<NPAPIProcs.NPN_InvokeDelegate>(
+                    (IntPtr npp, IntPtr obj, IntPtr methodName, IntPtr argsPtr, uint argCount, IntPtr resultPtr) =>
+                    {
+                        try
+                        {
+                            Logger.Log(
+                                $"NPN_Invoke obj={DescribeNPObjectRefCount(obj)}, method={DescribeNPIdentifier(methodName)}, argc={argCount}, args={DescribeNPVariantsBuffer(argsPtr, argCount)}, resultPtr=0x{resultPtr.ToString("x")}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
                             WriteVoidVariant(resultPtr);
                         }
+                        catch (Exception ex)
+                        {
+                            Logger.Log($"NPN_Invoke threw: {ex}");
+                        }
 
-                        Logger.Log(
-                            $"NPN_GetProperty obj={DescribeNPObjectRefCount(obj)}, property={DescribeNPIdentifier(propertyName)}, resultPtr=0x{resultPtr.ToString("x")}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
-                    }
-                    catch (Exception ex)
+                        return false;
+                    });
+                funcs.invoke = Marshal.GetFunctionPointerForDelegate(invokeStub);
+                // NPN_PostURLNotifyProc
+                var posturlNotifyDel = pin<NPAPIProcs.NPN_PostURLNotifyDelegate>(
+                    (IntPtr instance, IntPtr urlPtr,
+                        IntPtr windowPtr, uint len, IntPtr buf,
+                        [MarshalAs(UnmanagedType.I1)] bool file, IntPtr notifyData) =>
                     {
-                        Logger.Log($"NPN_GetProperty threw: {ex}");
-                    }
+                        try
+                        {
+                            string url = ReadAnsiString(urlPtr);
+                            string window = ReadAnsiString(windowPtr);
+                            Logger.Log(
+                                $"NPN_PostURLNotify url='{url}', window='{window}', len={len}, file={file}, notifyData=0x{notifyData.ToString("x")}, buf=0x{buf.ToString("x")}");
 
-                    return false;
-                });
-            funcs.getproperty = Marshal.GetFunctionPointerForDelegate(getPropertyStub);
+                            byte[] data = Array.Empty<byte>();
+                            uint safeLen = Math.Min(len, 0x1000u);
+                            if (safeLen > 0 && buf != IntPtr.Zero && IsReadablePointer(buf))
+                            {
+                                int n = checked((int)safeLen);
+                                data = new byte[n];
+                                Marshal.Copy(buf, data, 0, n);
+                            }
 
-            // NPN_CreateObjectProc
-            funcs.createobject = Marshal.GetFunctionPointerForDelegate(
-                PinDelegate<NPN_CreateObjectDelegate>(NPN_CreateObject));
+                            Network.RegisterPostRequest(url, true, notifyData, safeLen, data);
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Log($"NPN_PostURLNotify threw: {ex}");
+                        }
 
-            // NPN_RetainObjectProc
-            var retainObj = pin<NPAPIProcs.NPN_RetainObjectDelegate>((IntPtr objPtr) =>
-            {
+                        return 0; // NPERR_NO_ERROR
+                    });
+                funcs.posturlnotify = Marshal.GetFunctionPointerForDelegate(posturlNotifyDel);
 
-                try
-                {
-                    Logger.Log($"NPN_RetainObject before obj={DescribeNPObjectRefCount(objPtr)}");
-                    if (objPtr == IntPtr.Zero) return IntPtr.Zero;
-                    if (!IsReadablePointer(objPtr)) return objPtr;
-                    var obj = Marshal.PtrToStructure<NPObject>(objPtr);
-                    unchecked
-                    {
-                        obj.referenceCount++;
-                    }
-
-                    Marshal.StructureToPtr(obj, objPtr, false);
-                    Logger.Log($"NPN_RetainObject after obj={DescribeNPObjectRefCount(objPtr)}");
-                    return objPtr;
-                }
-                catch
-                {
-                    return objPtr;
-                }
-            });
-            funcs.retainobject = Marshal.GetFunctionPointerForDelegate(retainObj);
-
-            // NPN_ReleaseVariantValueProc (native runner: no-op)
-            var releaseVariant = pin<NPAPIProcs.NPN_ReleaseVariantValueProcPtr>((IntPtr variantPtr) =>
-            {
-                Logger.Log(
-                    $"NPN_ReleaseVariantValue variantPtr=0x{variantPtr:x}, value={DescribeNPVariantPtr(variantPtr)}");
-            });
-            funcs.releasevariantvalue = Marshal.GetFunctionPointerForDelegate(releaseVariant);
-
-            // NPN_GetValueProc
-            var getValueDel = new NPN_GetValueDelegate(NPN_GetValue);
-            funcs.getvalue = Marshal.GetFunctionPointerForDelegate(getValueDel);
-
-            // NPN_EvaluateProc
-            var evaluateDel = pin<NPAPIProcs.NPN_EvaluateDelegate>(
-                (IntPtr npp, IntPtr obj, IntPtr scriptPtr, IntPtr resultPtr) =>
+                // NPN_ReleaseObjectProc
+                var releaseObj = pin<NPAPIProcs.NPN_ReleaseObjectDelegate>((IntPtr objPtr) =>
                 {
                     try
                     {
-                        Logger.Log(
-                            $"NPN_Evaluate obj={DescribeNPObjectRefCount(obj)}, scriptPtr=0x{scriptPtr:x}, resultPtr=0x{resultPtr:x}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
-                        string code = string.Empty;
-                        if (scriptPtr != IntPtr.Zero && IsReadablePointer(scriptPtr))
+                        Logger.Log($"NPN_ReleaseObject before obj={DescribeNPObjectRefCount(objPtr)}");
+                        if (objPtr == IntPtr.Zero) return;
+                        if (!IsReadablePointer(objPtr)) return;
+
+                        var obj = Marshal.PtrToStructure<NPObject>(objPtr);
+                        if (obj.referenceCount > 0)
+                            obj.referenceCount--;
+
+                        if (obj.referenceCount != 0)
                         {
-                            try
+                            Marshal.StructureToPtr(obj, objPtr, false);
+                            return;
+                        }
+
+                        // should never ask to deallocate the (statically allocated) browser object
+                        if (objPtr == s_browserObjectPtr || IsLocationObject(objPtr))
+                        {
+                            //obj.referenceCount = 1;
+                            Logger.Log($"NPN_ReleaseObject dont free browser object: {objPtr}");
+                            Marshal.StructureToPtr(obj, objPtr, false);
+                            return;
+                        }
+
+                        // if (obj->_class && obj->_class->deallocate) obj->_class->deallocate(obj); else free(obj);
+                        IntPtr classPtr = obj._class;
+                        if (classPtr != IntPtr.Zero && IsReadablePointer(classPtr))
+                        {
+                            var cls = Marshal.PtrToStructure<NPClass>(classPtr);
+                            if (cls.deallocate != IntPtr.Zero && IsExecutablePointer(cls.deallocate))
                             {
-                                var script = Marshal.PtrToStructure<NPString>(scriptPtr);
-                                if (script.UTF8Characters != IntPtr.Zero && IsReadablePointer(script.UTF8Characters))
-                                    code = Marshal.PtrToStringUTF8(script.UTF8Characters) ?? string.Empty;
-                            }
-                            catch (Exception ex)
-                            {
-                                Logger.Log($"NPN_Evaluate failed to read script string: {ex}");
+                                var dealloc =
+                                    Marshal.GetDelegateForFunctionPointer<NPAPIProcs.NP_DeallocateDelegate>(
+                                        cls.deallocate);
+                                dealloc(objPtr);
+                                return;
                             }
                         }
 
-                        Logger.Log(
-                            $"NPN_Evaluate script='{code}', resultPtr=0x{resultPtr:x}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
-
-                        const string HOMEPAGE_CALLBACK_SCRIPT = "HomePage(\"UnityEngine.GameObject\");";
-                        const string PAGEOUT_CALLBACK_SCRIPT = "PageOut(\"UnityEngine.GameObject\");";
-                        const string AUTH_CALLBACK_SCRIPT = "authDoCallback(\"UnityEngine.GameObject\");";
-                        const string NAVIGATE_SCRIPT = "location.href=\"";
-
-                        if (code.StartsWith(HOMEPAGE_CALLBACK_SCRIPT, StringComparison.Ordinal)
-                            || code.StartsWith(PAGEOUT_CALLBACK_SCRIPT, StringComparison.Ordinal))
+                        // Only free objects that we allocated.
+                        bool owned;
+                        lock (s_allocatedObjectPtrs)
                         {
-                            // Application.Current?.Dispatcher?.BeginInvoke(new Action(() => Application.Current?.Shutdown()));
-                            Application.Current?.Dispatcher?.BeginInvoke(new Action(() => PostQuitMessage(0)));
-
+                            owned = s_allocatedObjectPtrs.Remove(objPtr);
                         }
-                        else if (code.StartsWith(AUTH_CALLBACK_SCRIPT, StringComparison.Ordinal))
+
+                        if (owned)
+                            Marshal.FreeHGlobal(objPtr);
+
+                        Logger.Log($"NPN_ReleaseObject after obj=0x{objPtr.ToString("x")}, freed={owned}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"NPN_ReleaseObject threw: {ex}");
+                    }
+                });
+                funcs.releaseobject = Marshal.GetFunctionPointerForDelegate(releaseObj);
+
+                // NPN_GetPropertyProc
+                var getPropertyStub = pin<NPAPIProcs.NPN_GetPropertyDelegate>(
+                    (IntPtr npp, IntPtr obj, IntPtr propertyName, IntPtr resultPtr) =>
+                    {
+                        try
                         {
-                            string teg = TryGetArgValue("tegId", "TegId", "Username", "username") ?? string.Empty;
-                            string auth = TryGetArgValue("authId", "AuthId", "token") ?? string.Empty;
+                            Logger.Log(
+                                $"NPN_GetProperty obj={DescribeNPObjectRefCount(obj)}, property={DescribeNPIdentifier(propertyName)}, resultPtr=0x{resultPtr.ToString("x")}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
+                            if (resultPtr != IntPtr.Zero)
+                            {
+                                WriteVoidVariant(resultPtr);
+                            }
 
                             Logger.Log(
-                                $"NPN_Evaluate auth callback begin tid={Environment.CurrentManagedThreadId}, teg='{teg}', authPresent={!string.IsNullOrEmpty(auth)}");
-
-                            if (!string.IsNullOrEmpty(teg) && !string.IsNullOrEmpty(auth))
-                            {
-                                Logger.Log($"Auto-auth as {teg}");
-
-                                Logger.Log("NPN_Evaluate auth step -> SetTEGid");
-                                UnitySendMessage("GlobalManager", "SetTEGid", MakeStringVariant(teg));
-                                Logger.Log("NPN_Evaluate auth step <- SetTEGid");
-
-                                Logger.Log("NPN_Evaluate auth step -> SetAuthid");
-                                UnitySendMessage("GlobalManager", "SetAuthid", MakeStringVariant(auth));
-                                Logger.Log("NPN_Evaluate auth step <- SetAuthid");
-
-                                Logger.Log("NPN_Evaluate auth step -> DoAuth");
-                                UnitySendMessage("GlobalManager", "DoAuth", MakeIntVariant(0));
-                                Logger.Log("NPN_Evaluate auth step <- DoAuth");
-                            }
-
-                            Logger.Log($"NPN_Evaluate auth callback end tid={Environment.CurrentManagedThreadId}");
+                                $"NPN_GetProperty obj={DescribeNPObjectRefCount(obj)}, property={DescribeNPIdentifier(propertyName)}, resultPtr=0x{resultPtr.ToString("x")}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
                         }
-
-                        if (resultPtr != IntPtr.Zero)
+                        catch (Exception ex)
                         {
-                            var result = new NPVariant
-                            {
-                                type = NPVariantType.Void,
-                                value = new NPVariant.NPVariantValue()
-                            };
-
-                            Marshal.StructureToPtr(result, resultPtr, false);
+                            Logger.Log($"NPN_GetProperty threw: {ex}");
                         }
 
-                        Logger.Log($"NPN_Evaluate completed resultAfter={DescribeNPVariantPtr(resultPtr)}");
-
-                        return true;
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Log($"NPN_Evaluate threw: {ex}");
                         return false;
-                    }
-                });
-            funcs.evaluate = Marshal.GetFunctionPointerForDelegate(evaluateDel);
+                    });
+                funcs.getproperty = Marshal.GetFunctionPointerForDelegate(getPropertyStub);
 
-            // NPN_GetStringIdentifier
-            var getStringId = pin<NPAPIProcs.NPN_GetStringIdentifierDelegate>((IntPtr namePtr) =>
-            {
-                Logger.Log($"NPN_GetStringIdentifier namePtr=0x{namePtr.ToString("x")}");
-                if (namePtr == IntPtr.Zero) return IntPtr.Zero;
-                string name = Marshal.PtrToStringUTF8(namePtr) ?? string.Empty;
-                return NPIdentifierManager.GetStringIdentifier(name);
-            });
-            funcs.getstringidentifier = Marshal.GetFunctionPointerForDelegate(getStringId);
+                // NPN_CreateObjectProc
+                funcs.createobject = Marshal.GetFunctionPointerForDelegate(
+                    PinDelegate<NPN_CreateObjectDelegate>(NPN_CreateObject));
 
-            // NPN_GetStringIdentifiers
-            var getStringIds = pin<NPAPIProcs.NPN_GetStringIdentifiersDelegate>(
-                (IntPtr namesPtr, int nameCount, IntPtr identifiersPtr) =>
+                // NPN_RetainObjectProc
+                var retainObj = pin<NPAPIProcs.NPN_RetainObjectDelegate>((IntPtr objPtr) =>
                 {
+
                     try
                     {
-                        Logger.Log($"NPN_GetStringIdentifiers nameCount={nameCount}");
-                        for (int i = 0; i < nameCount; i++)
+                        Logger.Log($"NPN_RetainObject before obj={DescribeNPObjectRefCount(objPtr)}");
+                        if (objPtr == IntPtr.Zero) return IntPtr.Zero;
+                        if (!IsReadablePointer(objPtr)) return objPtr;
+                        var obj = Marshal.PtrToStructure<NPObject>(objPtr);
+                        unchecked
                         {
-                            IntPtr namePtr = Marshal.ReadIntPtr(namesPtr, i * IntPtr.Size);
-                            string name = Marshal.PtrToStringUTF8(namePtr) ?? string.Empty;
-                            IntPtr id = NPIdentifierManager.GetStringIdentifier(name);
-                            Marshal.WriteIntPtr(identifiersPtr, i * IntPtr.Size, id);
+                            obj.referenceCount++;
                         }
+
+                        Marshal.StructureToPtr(obj, objPtr, false);
+                        Logger.Log($"NPN_RetainObject after obj={DescribeNPObjectRefCount(objPtr)}");
+                        return objPtr;
                     }
-                    catch (Exception ex)
+                    catch
                     {
-                        Logger.Log($"NPN_GetStringIdentifiers threw: {ex}");
+                        return objPtr;
                     }
                 });
-            funcs.getstringidentifiers = Marshal.GetFunctionPointerForDelegate(getStringIds);
+                funcs.retainobject = Marshal.GetFunctionPointerForDelegate(retainObj);
 
+                // NPN_ReleaseVariantValueProc (native runner: no-op)
+                var releaseVariant = pin<NPAPIProcs.NPN_ReleaseVariantValueProcPtr>((IntPtr variantPtr) =>
+                {
+                    Logger.Log(
+                        $"NPN_ReleaseVariantValue variantPtr=0x{variantPtr:x}, value={DescribeNPVariantPtr(variantPtr)}");
+                });
+                funcs.releasevariantvalue = Marshal.GetFunctionPointerForDelegate(releaseVariant);
+
+                // NPN_GetValueProc
+                var getValueDel = new NPN_GetValueDelegate(NPN_GetValue);
+                funcs.getvalue = Marshal.GetFunctionPointerForDelegate(getValueDel);
+
+                // NPN_EvaluateProc
+                var evaluateDel = pin<NPAPIProcs.NPN_EvaluateDelegate>(
+                    (IntPtr npp, IntPtr obj, IntPtr scriptPtr, IntPtr resultPtr) =>
+                    {
+                        try
+                        {
+                            Logger.Log(
+                                $"NPN_Evaluate obj={DescribeNPObjectRefCount(obj)}, scriptPtr=0x{scriptPtr:x}, resultPtr=0x{resultPtr:x}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
+                            string code = string.Empty;
+                            if (scriptPtr != IntPtr.Zero && IsReadablePointer(scriptPtr))
+                            {
+                                try
+                                {
+                                    var script = Marshal.PtrToStructure<NPString>(scriptPtr);
+                                    if (script.UTF8Characters != IntPtr.Zero &&
+                                        IsReadablePointer(script.UTF8Characters))
+                                        code = Marshal.PtrToStringUTF8(script.UTF8Characters) ?? string.Empty;
+                                }
+                                catch (Exception ex)
+                                {
+                                    Logger.Log($"NPN_Evaluate failed to read script string: {ex}");
+                                }
+                            }
+
+                            Logger.Log(
+                                $"NPN_Evaluate script='{code}', resultPtr=0x{resultPtr:x}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
+
+                            const string HOMEPAGE_CALLBACK_SCRIPT = "HomePage(\"UnityEngine.GameObject\");";
+                            const string PAGEOUT_CALLBACK_SCRIPT = "PageOut(\"UnityEngine.GameObject\");";
+                            const string AUTH_CALLBACK_SCRIPT = "authDoCallback(\"UnityEngine.GameObject\");";
+                            const string NAVIGATE_SCRIPT = "location.href=\"";
+
+                            if (code.StartsWith(HOMEPAGE_CALLBACK_SCRIPT, StringComparison.Ordinal)
+                                || code.StartsWith(PAGEOUT_CALLBACK_SCRIPT, StringComparison.Ordinal))
+                            {
+                                // Application.Current?.Dispatcher?.BeginInvoke(new Action(() => Application.Current?.Shutdown()));
+                                Application.Current?.Dispatcher?.BeginInvoke(new Action(() => PostQuitMessage(0)));
+
+                            }
+                            else if (code.StartsWith(AUTH_CALLBACK_SCRIPT, StringComparison.Ordinal))
+                            {
+                                string teg = TryGetArgValue("tegId", "TegId", "Username", "username") ?? string.Empty;
+                                string auth = TryGetArgValue("authId", "AuthId", "token") ?? string.Empty;
+
+                                Logger.Log(
+                                    $"NPN_Evaluate auth callback begin tid={Environment.CurrentManagedThreadId}, teg='{teg}', authPresent={!string.IsNullOrEmpty(auth)}");
+
+                                if (!string.IsNullOrEmpty(teg) && !string.IsNullOrEmpty(auth))
+                                {
+                                    Logger.Log($"Auto-auth as {teg}");
+
+                                    Logger.Log("NPN_Evaluate auth step -> SetTEGid");
+                                    UnitySendMessage("GlobalManager", "SetTEGid", MakeStringVariant(teg));
+                                    Logger.Log("NPN_Evaluate auth step <- SetTEGid");
+
+                                    Logger.Log("NPN_Evaluate auth step -> SetAuthid");
+                                    UnitySendMessage("GlobalManager", "SetAuthid", MakeStringVariant(auth));
+                                    Logger.Log("NPN_Evaluate auth step <- SetAuthid");
+
+                                    Logger.Log("NPN_Evaluate auth step -> DoAuth");
+                                    UnitySendMessage("GlobalManager", "DoAuth", MakeIntVariant(0));
+                                    Logger.Log("NPN_Evaluate auth step <- DoAuth");
+                                }
+
+                                Logger.Log($"NPN_Evaluate auth callback end tid={Environment.CurrentManagedThreadId}");
+                            }
+
+                            if (resultPtr != IntPtr.Zero)
+                            {
+                                var result = new NPVariant
+                                {
+                                    type = NPVariantType.Void,
+                                    value = new NPVariant.NPVariantValue()
+                                };
+
+                                Marshal.StructureToPtr(result, resultPtr, false);
+                            }
+
+                            Logger.Log($"NPN_Evaluate completed resultAfter={DescribeNPVariantPtr(resultPtr)}");
+
+                            return true;
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Log($"NPN_Evaluate threw: {ex}");
+                            return false;
+                        }
+                    });
+                funcs.evaluate = Marshal.GetFunctionPointerForDelegate(evaluateDel);
+
+                // NPN_GetStringIdentifier
+                var getStringId = pin<NPAPIProcs.NPN_GetStringIdentifierDelegate>((IntPtr namePtr) =>
+                {
+                    Logger.Log($"NPN_GetStringIdentifier namePtr=0x{namePtr.ToString("x")}");
+                    if (namePtr == IntPtr.Zero) return IntPtr.Zero;
+                    string name = Marshal.PtrToStringUTF8(namePtr) ?? string.Empty;
+                    return NPIdentifierManager.GetStringIdentifier(name);
+                });
+                funcs.getstringidentifier = Marshal.GetFunctionPointerForDelegate(getStringId);
+
+                // NPN_GetStringIdentifiers
+                var getStringIds = pin<NPAPIProcs.NPN_GetStringIdentifiersDelegate>(
+                    (IntPtr namesPtr, int nameCount, IntPtr identifiersPtr) =>
+                    {
+                        try
+                        {
+                            Logger.Log($"NPN_GetStringIdentifiers nameCount={nameCount}");
+                            for (int i = 0; i < nameCount; i++)
+                            {
+                                IntPtr namePtr = Marshal.ReadIntPtr(namesPtr, i * IntPtr.Size);
+                                string name = Marshal.PtrToStringUTF8(namePtr) ?? string.Empty;
+                                IntPtr id = NPIdentifierManager.GetStringIdentifier(name);
+                                Marshal.WriteIntPtr(identifiersPtr, i * IntPtr.Size, id);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Log($"NPN_GetStringIdentifiers threw: {ex}");
+                        }
+                    });
+                funcs.getstringidentifiers = Marshal.GetFunctionPointerForDelegate(getStringIds);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"InitNetscapeFuncs threw: {ex}");
+            }
         }
 
         public static class NPIdentifierManager

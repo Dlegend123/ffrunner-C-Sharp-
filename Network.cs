@@ -58,8 +58,10 @@ public static class Network
         public IntPtr UrlPtr;
         public IntPtr UnmanagedBuffer; // persistent unmanaged buffer for Plugin_Write
 
-		public IntPtr MimeTypePtr;
+        public IntPtr MimeTypePtr;
+
         public IntPtr HeadersPtr; // track unmanaged headers
+
         // Track the GCHandle created in NPN_NewStream
         public GCHandle? Handle;
     }
@@ -86,6 +88,7 @@ public static class Network
             await Stream.DisposeAsync();
         }
     }
+
     [StructLayout(LayoutKind.Sequential)]
     public struct NPStream
     {
@@ -158,7 +161,7 @@ public static class Network
             });
 
             // Await asynchronously
-            await tcs.Task.ConfigureAwait(false);
+            await tcs.Task.WaitAsync(ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -177,17 +180,6 @@ public static class Network
             if (req.Failed || req.Completed)
                 return;
 
-            // Special case: pseudo-files should not stream
-            var fileName = Path.GetFileName(req.Url).ToLowerInvariant();
-            if (fileName == "logininfo.php" || fileName == "assetinfo.php")
-            {
-                req.Done = true;
-                req.DoneReason = NPRES_DONE;
-                req.Completed = true;
-
-                CompleteRequest();
-                return;
-            }
             // Ensure NPStream created
             if (req.StreamPtr == IntPtr.Zero)
             {
@@ -261,14 +253,14 @@ public static class Network
                 Plugin_DestroyStream!(nppUnmanagedPtr, req.StreamPtr, req.DoneReason);
                 Plugin_UrlNotifyPtr!(nppUnmanagedPtr, req.UrlPtr, req.DoneReason, req.NotifyData);
 
-                req.Source?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                req.Source?.DisposeAsync().AsTask();
                 req.Source = null;
 
                 req.Completed = true;
                 CompleteRequest(); // only here
             }
         }
-        catch(Exception ex)
+        catch (Exception ex)
         {
             Logger.Log($"[Network] HandleIoProgress failed for requestId={req.Id}, url='{req.Url}': {ex}");
             req.Failed = true;
@@ -281,7 +273,7 @@ public static class Network
     {
         try
         {
-            req.Source?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            req.Source?.DisposeAsync().AsTask();
             req.Source = null;
         }
         catch (Exception ex)
@@ -334,7 +326,7 @@ public static class Network
             IsPost = false
         };
 
-       // Logger.Log($"Network.RegisterGetRequest {DescribeRequest(req)}");
+        // Logger.Log($"Network.RegisterGetRequest {DescribeRequest(req)}");
         BeginRequest();
         Enqueue(req);
     }
@@ -351,7 +343,7 @@ public static class Network
             PostData = postData ?? Array.Empty<byte>()
         };
 
-     //   Logger.Log($"Network.RegisterPostRequest {DescribeRequest(req)}, postLen={postLen}");
+        //   Logger.Log($"Network.RegisterPostRequest {DescribeRequest(req)}, postLen={postLen}");
         BeginRequest();
         Enqueue(req);
     }
@@ -415,7 +407,7 @@ public static class Network
 
     public static void Enqueue(Request req)
     {
-       // Logger.Verbose($"Network.Enqueue {DescribeRequest(req)}");
+        // Logger.Verbose($"Network.Enqueue {DescribeRequest(req)}");
         EnsureWorker();
 
         var cts = _sCts;
@@ -480,22 +472,7 @@ public static class Network
     private static async Task ProgressRequestAsync(Request req, CancellationToken ct)
     {
         Logger.Log($"Network.ProgressRequestAsync requestId={req.Id}, url='{req.Url}'");
-
-        var fileName = Path.GetFileName(req.Url).ToLowerInvariant();
-        if (fileName == "logininfo.php" || fileName == "assetinfo.php")
-        {
-            req.Done = true;
-            req.DoneReason = NPRES_DONE;
-            req.Completed = true;
-
-            Plugin_UrlNotifyPtr!(nppUnmanagedPtr, req.UrlPtr, req.DoneReason, req.NotifyData);
-            CompleteRequest();
-            return;
-        }
-
-        if (req.WritePtr != req.WriteSize)
-            return;
-
+        
         req.WritePtr = 0;
         req.WriteSize = 0;
 
@@ -508,23 +485,32 @@ public static class Network
                 return;
             }
 
-            if (req.InMemoryData != null)
+            var fileName = Path.GetFileName(req.Url).ToLowerInvariant();
+            if (fileName == "logininfo.php" || fileName == "assetinfo.php")
             {
-                var remaining = req.InMemoryData.Length - req.InMemoryOffset;
-                if (remaining > 0)
+                if (req.InMemoryData != null)
                 {
-                    var toCopy = Math.Min(req.Buffer.Length, remaining);
-                    Buffer.BlockCopy(req.InMemoryData, req.InMemoryOffset, req.Buffer, 0, toCopy);
-                    req.InMemoryOffset += toCopy;
-                    req.WriteSize = toCopy;
+                    var remaining = req.InMemoryData.Length - req.InMemoryOffset;
+                    if (remaining > 0)
+                    {
+                        var toCopy = Math.Min(req.Buffer.Length, remaining);
+                        Buffer.BlockCopy(req.InMemoryData, req.InMemoryOffset, req.Buffer, 0, toCopy);
+                        req.InMemoryOffset += toCopy;
+                        req.WriteSize = toCopy;
+                    }
+                    else
+                    {
+                        req.Done = true;
+                        req.DoneReason = NPRES_DONE;
+                    }
                 }
+                return;
             }
-            else
-            {
-                Logger.Log($"Network.ProgressRequestAsync reading from stream for requestId={req.Id}, url='{req.Url}'");
-                var read = await req.Source.Stream.ReadAsync(req.Buffer.AsMemory(0, req.Buffer.Length), ct);
-                req.WriteSize = read;
-            }
+
+
+            Logger.Log($"Network.ProgressRequestAsync reading from stream for requestId={req.Id}, url='{req.Url}'");
+            var read = await req.Source.Stream.ReadAsync(req.Buffer.AsMemory(0, req.Buffer.Length), ct);
+            req.WriteSize = read;
 
             if (req.WriteSize == 0)
             {
@@ -711,7 +697,7 @@ public static class Network
                     return (headers, payload);
                 }
         }
-        catch(Exception ex)
+        catch (Exception ex)
         {
             Logger.Log($"SplitPostBuffer failed: {ex}");
         }
@@ -1078,7 +1064,8 @@ public static class Network
         }
         catch (Exception logEx)
         {
-            Logger.Log($"[Network] FailRequest logging failed for requestId={req.Id}, url='{req.Url}', context={context}, ex={logEx}");
+            Logger.Log(
+                $"[Network] FailRequest logging failed for requestId={req.Id}, url='{req.Url}', context={context}, ex={logEx}");
         }
     }
 }

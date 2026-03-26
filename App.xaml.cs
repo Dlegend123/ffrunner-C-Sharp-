@@ -123,26 +123,7 @@ namespace ffrunner
             public int X;
             public int Y;
         }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct EXCEPTION_POINTERS
-        {
-            public IntPtr ExceptionRecord;
-            public IntPtr ContextRecord;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct EXCEPTION_RECORD
-        {
-            public uint ExceptionCode;
-            public uint ExceptionFlags;
-            public IntPtr ExceptionRecord;
-            public IntPtr ExceptionAddress;
-            public uint NumberParameters;
-            public IntPtr ExceptionInformation0;
-            public IntPtr ExceptionInformation1;
-        }
-
+        
         [UnmanagedFunctionPointer(CallingConvention.Winapi)]
         private delegate int VectoredExceptionHandlerDelegate(IntPtr exceptionPointers);
 
