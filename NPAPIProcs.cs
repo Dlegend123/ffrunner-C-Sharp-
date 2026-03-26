@@ -1,4 +1,5 @@
-﻿using System.Runtime.InteropServices;
+﻿using System;
+using System.Runtime.InteropServices;
 using static ffrunner.Structs;
 
 namespace ffrunner
@@ -6,23 +7,25 @@ namespace ffrunner
     // NPAPI delegates and signatures (match npfunctions.h)
     public static class NPAPIProcs
     {
+        // ---------------------------
+        // Plugin-provided NP_* (Cdecl)
+        // ---------------------------
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public delegate short NP_GetEntryPointsDelegate(ref NPPluginFuncs pluginFuncs);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        public delegate short NP_GetEntryPointsDelegate(ref Structs.NPPluginFuncs pluginFuncs);
-
-        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        public delegate short NP_InitializeDelegate(ref Structs.NPNetscapeFuncs bFuncs);
+        public delegate short NP_InitializeDelegate(ref NPNetscapeFuncs bFuncs);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate short NP_ShutdownDelegate();
 
         // ---------------------------
-        // Plugin-provided NPP_* (Cdecl)
+        // Plugin NPP_* (Cdecl)
         // ---------------------------
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        public delegate short NPP_New_Unmanaged_Cdecl_ShortArg(
-            IntPtr pluginType,      // const char* MIME type
-            IntPtr instance,        // NPP (pointer to NPP_t)
+        public delegate short NPP_New_Unmanaged_Cdecl(
+            IntPtr pluginType,      // const char* MIME type → IntPtr for safety
+            IntPtr instance,        // NPP_t*
             ushort mode,            // uint16_t
             short argc,             // int16_t
             IntPtr argn,            // char*[]
@@ -34,7 +37,7 @@ namespace ffrunner
         public delegate short NPP_Destroy_Unmanaged_Cdecl(IntPtr instance, IntPtr savedPtr);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        public delegate short NPP_SetWindow_Unmanaged_Cdecl(IntPtr instance, ref Structs.NPWindow window);
+        public delegate short NPP_SetWindow_Unmanaged_Cdecl(IntPtr instance, ref NPWindow window);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate short NPP_SetWindow_Unmanaged_Cdecl_Ptr(IntPtr instance, IntPtr windowPtr);
@@ -64,14 +67,18 @@ namespace ffrunner
         public delegate short NPP_GetValue_Unmanaged_Cdecl(IntPtr instance, int variable, ref IntPtr value);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        public delegate void NPP_URLNotifyDelegate(IntPtr instance, IntPtr urlPtr, short reason, IntPtr notifyData);
-
-        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        public delegate void NPP_URLNotifyDelegate_Ptr(IntPtr instance, IntPtr urlPtr, short reason, IntPtr notifyData);
+        public delegate void NPP_URLNotifyDelegate(IntPtr instance,
+            [MarshalAs(UnmanagedType.LPStr)] string url,
+            short reason,
+            IntPtr notifyData);
 
         // ---------------------------
         // Browser-provided NPN_* (Cdecl)
         // ---------------------------
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.LPStr)]
+        public delegate string NPN_UserAgentDelegate(IntPtr instance);
+
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate short NPN_GetURLDelegate(IntPtr instance, IntPtr urlPtr, IntPtr windowPtr);
 
@@ -83,11 +90,6 @@ namespace ffrunner
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate short NPN_PostURLNotifyDelegate(IntPtr instance, IntPtr urlPtr, IntPtr windowPtr, uint len, IntPtr buf, [MarshalAs(UnmanagedType.I1)] bool file, IntPtr notifyData);
-        
-
-        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        public delegate IntPtr NPN_UserAgentDelegate(IntPtr instance);
-        
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate IntPtr NPN_GetStringIdentifierDelegate(IntPtr namePtr);
@@ -118,7 +120,7 @@ namespace ffrunner
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate void NPN_ReleaseVariantValueProcPtr(IntPtr variantPtr);
-        
+
         // ---------------------------
         // NPClass callbacks (Cdecl)
         // ---------------------------
@@ -142,7 +144,7 @@ namespace ffrunner
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         [return: MarshalAs(UnmanagedType.I1)]
         public delegate bool NP_InvokeDelegate(IntPtr npobj, IntPtr name, IntPtr argsPtr, uint argCount, IntPtr resultPtr);
-        
+
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         [return: MarshalAs(UnmanagedType.I1)]
         public delegate bool NP_InvokeDefaultDelegate(IntPtr npobj, IntPtr argsPtr, uint argCount, IntPtr resultPtr);
@@ -169,6 +171,5 @@ namespace ffrunner
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate short NPN_GetValueDelegate(IntPtr instance, int variable, IntPtr valuePtr);
-
     }
 }

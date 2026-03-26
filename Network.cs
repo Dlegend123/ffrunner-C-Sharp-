@@ -1,10 +1,12 @@
-﻿using System.Collections.Concurrent;
-using System.Diagnostics.Metrics;
+﻿using System;
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using static ffrunner.NPAPIStubs;
 using static ffrunner.PluginBootstrap;
@@ -28,6 +30,7 @@ public static class Network
     private const ushort NP_ASFILEONLY = 4;
     private const short NPRES_DONE = 0;
     private const short NPRES_NETWORK_ERR = 1;
+
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi, Pack = 1)]
     public struct AssetInfo
     {
@@ -40,6 +43,7 @@ public static class Network
         public int Size;
         public int Flags;
     }
+
     public sealed class Request
     {
         public int Id;
@@ -70,13 +74,10 @@ public static class Network
         public readonly AutoResetEvent ReadyEvent = new(false);
         public IntPtr StreamPtr;
         public IntPtr UrlPtr;
-        public IntPtr UnmanagedBuffer; // persistent unmanaged buffer for Plugin_Write
-
+        public IntPtr UnmanagedBuffer;
         public IntPtr MimeTypePtr;
-
-        public IntPtr HeadersPtr; // track unmanaged headers
-
-        // Track the GCHandle created in NPN_NewStream
+        public IntPtr HeadersPtr;
+        public uint Current; // tracks bytes already processed
         public GCHandle? Handle;
     }
 
@@ -93,13 +94,11 @@ public static class Network
         public Stream Stream { get; }
         public long? Length { get; }
         public string? Headers { get; }
-
         private readonly HttpResponseMessage? _response;
 
         public async ValueTask DisposeAsync()
         {
             await Stream.DisposeAsync();
-
             _response?.Dispose();
         }
     }
@@ -129,6 +128,38 @@ public static class Network
     private static int _sMainRequested;
     private static int _sNextRequestId;
 
+    public static void HandleIoProgress(Request req, int bytesRead = 0)
+    {
+        try
+        {
+            if (req == null || req.Done) return;
+
+            // Increment processed bytes
+            req.Current += (uint)bytesRead;
+
+            // Call ProgressRequestAsync with a token (use None for C-style synchronous flow)
+            ProgressRequestAsync(req, CancellationToken.None).ConfigureAwait(false).GetAwaiter().GetResult();
+
+            // If we have reached the end
+            if (req.Current >= req.End && !req.Completed)
+            {
+                req.Done = true;
+                req.DoneReason = NPRES_DONE;
+                req.Completed = true;
+                CompleteRequest();
+
+                if (req.DoNotify)
+                    Plugin_UrlNotify!(nppUnmanagedPtr, req.UrlPtr, req.DoneReason, req.NotifyData);
+
+                Logger.Log($"[Network] Completed request: {req.Url}");
+            }
+        }
+        catch (Exception ex)
+        {
+            FailRequest(req, nameof(HandleIoProgress), ex);
+        }
+    }
+
     public static void InitializeWindow(IntPtr hwnd)
     {
         Logger.Log($"Network.InitializeWindow hwnd=0x{hwnd:x}");
@@ -136,148 +167,6 @@ public static class Network
         if (SIoMsg == 0)
             SIoMsg = RegisterWindowMessage(IO_MSG_NAME);
         Logger.Log($"Network.InitializeWindow ioMsg=0x{SIoMsg:x}");
-    }
-
-    private static async Task PostRequestAsync(Request req, CancellationToken ct)
-    {
-        try
-        {
-            if (_sHwnd == IntPtr.Zero || SIoMsg == 0)
-                throw new InvalidOperationException("Network window message plumbing is not initialized.");
-
-            if (req.Handle is not { IsAllocated: true })
-                req.Handle = GCHandle.Alloc(req, GCHandleType.Normal);
-
-            Logger.Verbose(
-                $"Network.PostRequestAsync requestId={req.Id}, url='{req.Url}', done={req.Done}");
-
-            if (!PostMessage(_sHwnd, SIoMsg, IntPtr.Zero, GCHandle.ToIntPtr(req.Handle.Value)))
-                throw new InvalidOperationException($"Failed to post IO message: {Marshal.GetLastWin32Error()}");
-           
-            if (!await Task.Run(() => req.ReadyEvent.WaitOne(20000), ct))
-            {
-                Logger.Log($"Network.PostRequestAsync timeout requestId={req.Id}");
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.Log($"[Network] PostRequestAsync failed for requestId={req.Id}: {ex}");
-            req.Failed = true;
-            req.Done = true;
-            req.DoneReason = NPRES_NETWORK_ERR;
-        }
-    }
-
-    public static void HandleIoProgress(Request req)
-    {
-        if (req.Failed || req.Completed) return;
-
-        if (req.StreamPtr == IntPtr.Zero)
-        {
-            req.UrlPtr = StringToUtf8(req.Url);
-            req.MimeTypePtr = StringToUtf8(GetMimeType(req.Url));
-            var streamEmu = new NPStream { url = req.UrlPtr, end = req.End, notifyData = req.NotifyData };
-            req.StreamPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPStream>());
-            Marshal.StructureToPtr(streamEmu, req.StreamPtr, false);
-
-            int res = Plugin_NewStream!(nppUnmanagedPtr, req.MimeTypePtr, req.StreamPtr, 0, out var stype);
-            req.StreamType = stype;
-            if (res != 0) { req.Failed = true; req.Done = true; return; }
-        }
-
-
-        // Feed plugin loop (simplified)
-        int writePtr = req.WritePtr;
-        while (writePtr < req.WriteSize)
-        {
-            int ready = Plugin_WriteReady!(nppUnmanagedPtr, req.StreamPtr);
-            if (ready <= 0) { Task.Yield(); continue; }
-
-            int chunk = Math.Min(ready, req.WriteSize - writePtr);
-            if (req.UnmanagedBuffer == IntPtr.Zero)
-                req.UnmanagedBuffer = Marshal.AllocHGlobal(REQUEST_BUFFER_SIZE);
-
-            Marshal.Copy(req.Buffer, writePtr, req.UnmanagedBuffer, chunk);
-            int written = Plugin_Write!(nppUnmanagedPtr, req.StreamPtr, req.BytesWritten, chunk, req.UnmanagedBuffer);
-
-            if (written <= 0)
-            {
-                req.Failed = true;
-                req.Done = true;
-                req.DoneReason = NPRES_NETWORK_ERR;
-                break;
-            }
-
-            writePtr += written;
-            req.BytesWritten += written;
-            req.WritePtr = writePtr;
-        }
-
-        if (req.Done || req.Failed)
-        {
-            Plugin_DestroyStream!(nppUnmanagedPtr, req.StreamPtr, req.DoneReason);
-            req.StreamPtr = IntPtr.Zero;
-
-            if (req.DoNotify)
-                Plugin_UrlNotify!(nppUnmanagedPtr, req.UrlPtr, req.DoneReason, req.NotifyData);
-
-            if (req.Source != null)
-            {
-                _ = req.Source.DisposeAsync(); // fire-and-forget async disposal
-                req.Source = null;
-            }
-
-            req.Completed = true;
-            CompleteRequest();
-        }
-    }
-
-    private static async Task CleanupRequestAsync(Request req)
-    {
-        try
-        {
-            if (req.Source != null)
-            {
-                await req.Source.DisposeAsync();
-                req.Source = null;
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.Log($"[Network] CleanupRequestAsync failed: {ex}");
-        }
-
-        if (req.HeadersPtr != IntPtr.Zero)
-        {
-            Marshal.FreeHGlobal(req.HeadersPtr);
-            req.HeadersPtr = IntPtr.Zero;
-        }
-
-        // ⚠️ Do NOT free StreamPtr here — Plugin_DestroyStream already handled it
-        req.StreamPtr = IntPtr.Zero;
-
-        if (req.UrlPtr != IntPtr.Zero)
-        {
-            Marshal.FreeHGlobal(req.UrlPtr);
-            req.UrlPtr = IntPtr.Zero;
-        }
-
-        if (req.MimeTypePtr != IntPtr.Zero)
-        {
-            Marshal.FreeHGlobal(req.MimeTypePtr);
-            req.MimeTypePtr = IntPtr.Zero;
-        }
-
-        if (req.UnmanagedBuffer != IntPtr.Zero)
-        {
-            Marshal.FreeHGlobal(req.UnmanagedBuffer);
-            req.UnmanagedBuffer = IntPtr.Zero;
-        }
-
-        if (req.Handle?.IsAllocated == true)
-            req.Handle.Value.Free();
-
-        req.ReadyEvent.Dispose();
     }
 
     public static void RegisterGetRequest(string url, bool doNotify, IntPtr notifyData)
@@ -291,7 +180,7 @@ public static class Network
             IsPost = false
         };
 
-        BeginRequest(); // ensure request count increment
+        BeginRequest();
         Enqueue(req);
     }
 
@@ -307,35 +196,28 @@ public static class Network
             PostData = postData ?? Array.Empty<byte>()
         };
 
-        BeginRequest(); // ensure request count increment
+        BeginRequest();
         Enqueue(req);
     }
 
     public static void InitNetwork(string mainSrcUrl)
     {
         s_baseUri = null;
-
         CleanupGeneratedTransientFiles();
-
         Logger.Log($"Network.InitNetwork main: {mainSrcUrl}");
         Logger.Log($"Network baseUri: {(s_baseUri != null ? s_baseUri.ToString() : "(none)")}");
 
         Init();
 
-        // Immediately queue main loading request
         var main = App.Args.MainPathOrAddress ?? string.Empty;
         if (!string.IsNullOrEmpty(main))
         {
-            _sMainRequested = 1; // mark main requested
+            _sMainRequested = 1;
             RegisterGetRequest(main, true, IntPtr.Zero);
         }
     }
 
-    public static void Init()
-    {
-        EnsureWorker();
-        // ❌ DO NOTHING ELSE
-    }
+    public static void Init() => EnsureWorker();
 
     public static void Shutdown()
     {
@@ -380,21 +262,14 @@ public static class Network
 
     public static void Enqueue(Request req)
     {
-        // Logger.Verbose($"Network.Enqueue {DescribeRequest(req)}");
         EnsureWorker();
-
-        var cts = _sCts;
-        if (cts == null)
-            throw new InvalidOperationException("Network request processing is not initialized.");
-
+        var cts = _sCts ?? throw new InvalidOperationException("Network request processing is not initialized.");
         Task.Run(() => ProcessRequestAsync(req, cts.Token), cts.Token);
     }
 
     private static void EnsureWorker()
     {
-        if (_sCts != null)
-            return;
-
+        if (_sCts != null) return;
         var cts = new CancellationTokenSource();
         var existing = Interlocked.CompareExchange(ref _sCts, cts, null);
         if (existing != null)
@@ -442,55 +317,140 @@ public static class Network
         }
     }
 
-    private static async Task ProgressRequestAsync(Request req, CancellationToken ct)
+    private static async Task PostRequestAsync(Request req, CancellationToken ct)
     {
         try
         {
-            while (!req.Done && !req.Failed)
+            if (_sHwnd == IntPtr.Zero || SIoMsg == 0)
+                throw new InvalidOperationException("Network window message plumbing is not initialized.");
+
+            if (req.Handle is not { IsAllocated: true })
+                req.Handle = GCHandle.Alloc(req, GCHandleType.Normal);
+
+            Logger.Verbose(
+                $"Network.PostRequestAsync requestId={req.Id}, url='{req.Url}', done={req.Done}");
+
+            if (!PostMessage(_sHwnd, SIoMsg, IntPtr.Zero, GCHandle.ToIntPtr(req.Handle.Value)))
+                throw new InvalidOperationException($"Failed to post IO message: {Marshal.GetLastWin32Error()}");
+
+            if (!await Task.Run(() => req.ReadyEvent.WaitOne(20000), ct))
+                Logger.Log($"Network.PostRequestAsync timeout requestId={req.Id}");
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[Network] PostRequestAsync failed for requestId={req.Id}: {ex}");
+            req.Failed = true;
+            req.Done = true;
+            req.DoneReason = NPRES_NETWORK_ERR;
+        }
+    }
+
+    private static async Task CleanupRequestAsync(Request req)
+    {
+        try
+        {
+            if (req.Source != null)
             {
-                if (req.InMemoryData != null)
+                await req.Source.DisposeAsync();
+                req.Source = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[Network] CleanupRequestAsync failed: {ex}");
+        }
+
+        if (req.HeadersPtr != IntPtr.Zero)
+        {
+            Marshal.FreeHGlobal(req.HeadersPtr);
+            req.HeadersPtr = IntPtr.Zero;
+        }
+
+        req.StreamPtr = IntPtr.Zero;
+
+        if (req.UrlPtr != IntPtr.Zero)
+        {
+            Marshal.FreeHGlobal(req.UrlPtr);
+            req.UrlPtr = IntPtr.Zero;
+        }
+
+        if (req.MimeTypePtr != IntPtr.Zero)
+        {
+            Marshal.FreeHGlobal(req.MimeTypePtr);
+            req.MimeTypePtr = IntPtr.Zero;
+        }
+
+        if (req.UnmanagedBuffer != IntPtr.Zero)
+        {
+            Marshal.FreeHGlobal(req.UnmanagedBuffer);
+            req.UnmanagedBuffer = IntPtr.Zero;
+        }
+
+        if (req.Handle?.IsAllocated == true)
+            req.Handle.Value.Free();
+
+        req.ReadyEvent.Dispose();
+    }
+
+    // -------------------
+    // ALL THE HELPER METHODS
+    // -------------------
+
+    private static async Task ProgressRequestAsync(Request req, CancellationToken ct)
+    {
+        // Implementation adapted to C# async
+        while (!req.Done && !req.Failed)
+        {
+            if (req.InMemoryData != null)
+            {
+                int remaining = req.InMemoryData.Length - req.InMemoryOffset;
+                if (remaining > 0)
                 {
-                    var remaining = req.InMemoryData.Length - req.InMemoryOffset;
-                    if (remaining > 0)
-                    {
-                        var toCopy = Math.Min(req.Buffer.Length, remaining);
-                        Buffer.BlockCopy(req.InMemoryData, req.InMemoryOffset, req.Buffer, 0, toCopy);
-                        req.InMemoryOffset += toCopy;
-                        req.WriteSize = toCopy;
-                    }
-                    else
-                    {
-                        req.Done = true;
-                        req.DoneReason = NPRES_DONE;
-                    }
+                    int toCopy = Math.Min(req.Buffer.Length, remaining);
+                    Buffer.BlockCopy(req.InMemoryData, req.InMemoryOffset, req.Buffer, 0, toCopy);
+                    req.InMemoryOffset += toCopy;
+                    req.WriteSize = toCopy;
                 }
-                else if (req.Source?.Stream != null)
+                else
                 {
-                    int toRead = Math.Min(REQUEST_BUFFER_SIZE, req.Buffer.Length);
-                    req.WriteSize = await req.Source.Stream.ReadAsync(req.Buffer.AsMemory(0, toRead), ct);
-                    if (req.WriteSize == 0) { req.Done = true; req.DoneReason = NPRES_DONE; }
+                    req.Done = true;
+                    req.DoneReason = NPRES_DONE;
                 }
-
-                // 🔑 Always run write loop if WriteSize > 0
-                int writePtr = 0;
-                while (writePtr < req.WriteSize)
+            }
+            else if (req.Source?.Stream != null)
+            {
+                int toRead = Math.Min(REQUEST_BUFFER_SIZE, req.Buffer.Length);
+                req.WriteSize = await req.Source.Stream.ReadAsync(req.Buffer.AsMemory(0, toRead), ct);
+                if (req.WriteSize == 0)
                 {
-                    int ready = Plugin_WriteReady!(nppUnmanagedPtr, req.StreamPtr);
-                    if (ready <= 0) { await Task.Yield(); continue; }
-
-                    int chunk = Math.Min(ready, req.WriteSize - writePtr);
-                    if (req.UnmanagedBuffer == IntPtr.Zero)
-                        req.UnmanagedBuffer = Marshal.AllocHGlobal(REQUEST_BUFFER_SIZE);
-
-                    Marshal.Copy(req.Buffer, writePtr, req.UnmanagedBuffer, chunk);
-                    int written = Plugin_Write!(nppUnmanagedPtr, req.StreamPtr, req.BytesWritten, chunk, req.UnmanagedBuffer);
-
-                    if (written <= 0) { req.Failed = true; req.Done = true; break; }
-
-                    writePtr += written;
-                    req.BytesWritten += written;
-                    req.WritePtr = writePtr;
+                    req.Done = true;
+                    req.DoneReason = NPRES_DONE;
                 }
+            }
+
+            int writePtr = 0;
+            while (writePtr < req.WriteSize)
+            {
+                int ready = Plugin_WriteReady!(nppUnmanagedPtr, req.StreamPtr);
+                if (ready <= 0) { await Task.Yield(); continue; }
+
+                int chunk = Math.Min(ready, req.WriteSize - writePtr);
+                if (req.UnmanagedBuffer == IntPtr.Zero)
+                    req.UnmanagedBuffer = Marshal.AllocHGlobal(REQUEST_BUFFER_SIZE);
+
+                Marshal.Copy(req.Buffer, writePtr, req.UnmanagedBuffer, chunk);
+                int written = Plugin_Write!(nppUnmanagedPtr, req.StreamPtr, req.BytesWritten, chunk, req.UnmanagedBuffer);
+
+                if (written <= 0)
+                {
+                    req.Failed = true;
+                    req.Done = true;
+                    break;
+                }
+
+                writePtr += written;
+                req.BytesWritten += written;
+                req.WritePtr = writePtr;
             }
 
             if (req.Done || req.Failed)
@@ -509,49 +469,37 @@ public static class Network
                 CompleteRequest();
             }
         }
-        catch (Exception ex)
-        {
-            FailRequest(req, "ProgressRequestAsync", ex);
-        }
     }
-
 
     private static async Task InitRequestAsync(Request req, CancellationToken ct)
     {
+        // Adapted flow for C# async, keeping C flow
         req.EffectiveUrl = GetRedirectedUrl(req.Url);
 
         try
         {
-            // In-memory assets (loginInfo.php, assetInfo.php, PNGs)
             if (TryGetInMemoryContent(req.EffectiveUrl, out var inMemory))
             {
                 req.InMemoryData = inMemory;
                 req.InMemoryOffset = 0;
                 req.End = (uint)Math.Min(inMemory.Length, uint.MaxValue);
 
-                // NPStream must exist before first write
                 req.UrlPtr = StringToUtf8(req.Url);
                 req.MimeTypePtr = StringToUtf8(GetMimeType(req.Url));
-                var streamEmu = new NPStream
-                {
-                    url = req.UrlPtr,
-                    end = req.End,
-                    notifyData = req.NotifyData
-                };
+                var streamEmu = new NPStream { url = req.UrlPtr, end = req.End, notifyData = req.NotifyData };
                 req.StreamPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPStream>());
                 Marshal.StructureToPtr(streamEmu, req.StreamPtr, false);
 
                 int res = Plugin_NewStream!(nppUnmanagedPtr, req.MimeTypePtr, req.StreamPtr, 0, out var stype);
                 req.StreamType = stype;
-                if (res != 0) { req.Failed = true; req.Done = true; return; }
 
                 req.Initialized = true;
                 return;
             }
 
-            // Local file
             var target = ResolveUri(req.EffectiveUrl);
             req.TargetUri = target;
+
             if (target.IsFile && File.Exists(target.LocalPath))
             {
                 req.Source = new StreamSource(
@@ -562,12 +510,10 @@ public static class Network
                 );
                 req.End = (uint)Math.Min(req.Source.Length ?? 0, uint.MaxValue);
             }
-            // Cache
             else if (!req.IsPost && TryInitFromCache(req))
             {
-                // Source already set
+                // source set
             }
-            // HTTP GET
             else if (!req.IsPost)
             {
                 var httpRequest = BuildHttpRequest(req, target);
@@ -581,13 +527,11 @@ public static class Network
                 );
                 req.End = (uint)Math.Min(req.Source.Length ?? 0, uint.MaxValue);
             }
-            // HTTP POST
             else if (req.IsPost)
             {
                 await ProcessPostAsync(req, ct);
             }
 
-            // NPStream creation for file/HTTP sources
             if (req.Source != null)
             {
                 req.UrlPtr = StringToUtf8(req.Url);
@@ -606,7 +550,12 @@ public static class Network
 
                 int res = Plugin_NewStream!(nppUnmanagedPtr, req.MimeTypePtr, req.StreamPtr, 0, out var stype);
                 req.StreamType = stype;
-                if (res != 0) { req.Failed = true; req.Done = true; return; }
+                if (res != 0)
+                {
+                    req.Failed = true;
+                    req.Done = true;
+                    return;
+                }
             }
         }
         catch (Exception ex)
@@ -621,393 +570,177 @@ public static class Network
             req.Initialized = true;
         }
     }
-
+    // --------------------------
+    // HELPER METHODS
+    // --------------------------
 
     private static Uri ResolveUri(string url)
     {
-        var requestUrl = url ?? string.Empty;
-        try
-        {
-            Logger.Log($"Network.ResolveUri input='{url}', currentDir='{Environment.CurrentDirectory}'");
+        if (Uri.TryCreate(url, UriKind.Absolute, out var absolute))
+            return absolute;
 
-            if (Uri.TryCreate(requestUrl, UriKind.Absolute, out var abs) &&
-                (abs.Scheme == Uri.UriSchemeFile ||
-                 abs.Scheme == Uri.UriSchemeHttp ||
-                 abs.Scheme == Uri.UriSchemeHttps))
-            {
-                Logger.Log($"Network.ResolveUri absolute -> '{abs}'");
-                return abs;
-            }
+        if (s_baseUri != null)
+            return new Uri(s_baseUri, url);
 
-            if (Path.IsPathRooted(requestUrl))
-            {
-                var fullPath = Path.GetFullPath(requestUrl);
-                var fileUri = new Uri(fullPath);
-                Logger.Log($"Network.ResolveUri Windows path -> '{fileUri}'");
-                return fileUri;
-            }
-
-            var combined = Path.GetFullPath(requestUrl);
-            var fallbackUri = new Uri(combined);
-            Logger.Log($"Network.ResolveUri fallback -> '{fallbackUri}'");
-            return fallbackUri;
-        }
-        catch (Exception ex)
-        {
-            Logger.Log($"Network.ResolveUri failed for '{url}': {ex}");
-            return new Uri("file:///" + Path.GetFullPath(url));
-        }
+        throw new InvalidOperationException($"Cannot resolve relative URL without base: {url}");
     }
 
-    private static (byte[] Headers, byte[] Payload) SplitPostBuffer(byte[] postData)
+    private static byte[][] SplitPostBuffer(byte[] postData, int chunkSize = 8192)
     {
-        if (postData.Length == 0)
-            return (Array.Empty<byte>(), Array.Empty<byte>());
-
-        for (var i = 0; i + 3 < postData.Length; i++)
-            if (postData[i] == '\r' && postData[i + 1] == '\n' &&
-                postData[i + 2] == '\r' && postData[i + 3] == '\n')
-            {
-                var headerLen = i + 4;
-                var headers = new byte[headerLen];
-                Buffer.BlockCopy(postData, 0, headers, 0, headerLen);
-
-                var payloadLen = postData.Length - headerLen;
-                var payload = new byte[payloadLen];
-                if (payloadLen > 0)
-                    Buffer.BlockCopy(postData, headerLen, payload, 0, payloadLen);
-
-                return (headers, payload);
-            }
-
-        return (Array.Empty<byte>(), postData);
+        int total = postData.Length;
+        int chunks = (total + chunkSize - 1) / chunkSize;
+        var result = new byte[chunks][];
+        for (int i = 0; i < chunks; i++)
+        {
+            int size = Math.Min(chunkSize, total - (i * chunkSize));
+            result[i] = new byte[size];
+            Buffer.BlockCopy(postData, i * chunkSize, result[i], 0, size);
+        }
+        return result;
     }
 
-    private static void ApplyPostHeaders(HttpContent content, byte[] headerBytes)
+    private static HttpRequestMessage ApplyPostHeaders(HttpRequestMessage req, Request r)
     {
-        if (headerBytes.Length == 0) return;
-
-        var headerText = Encoding.Latin1.GetString(headerBytes);
-        var lines = headerText.Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries);
-
-        foreach (var line in lines)
-        {
-            var colon = line.IndexOf(':');
-            if (colon <= 0) continue;
-
-            var name = line.Substring(0, colon).Trim();
-            var value = line.Substring(colon + 1).Trim();
-            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(value)) continue;
-
-            if (name.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)) continue;
-            content.Headers.TryAddWithoutValidation(name, value);
-        }
+        if (!string.IsNullOrEmpty(r.ContentType))
+            req.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(r.ContentType);
+        return req;
     }
 
     private static HttpClient newHttpClient()
     {
-        var hc = new HttpClient(new HttpClientHandler
+        var handler = new HttpClientHandler
         {
-            AllowAutoRedirect = true
-        }, true);
-
-        hc.Timeout = TimeSpan.FromSeconds(30);
-        hc.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "ffrunner");
-        return hc;
+            AllowAutoRedirect = false,
+            UseCookies = false
+        };
+        return new HttpClient(handler, disposeHandler: true);
     }
 
     private static string GetMimeType(string url)
     {
-        var fileName = GetFileNameFromUrl(url);
-
-        if (fileName.Contains("unity-dexlabs.png", StringComparison.OrdinalIgnoreCase))
-            return "image/png";
-
-        if (fileName.Contains("unity-loadingbar.png", StringComparison.OrdinalIgnoreCase))
-            return "image/png";
-
-        if (fileName.Contains("unity-loadingframe.png", StringComparison.OrdinalIgnoreCase))
-            return "image/png";
-
-        if (fileName.Contains("main.unity3d", StringComparison.OrdinalIgnoreCase))
-            return "application/octet-stream";
-
-        if (fileName.Contains(".php", StringComparison.OrdinalIgnoreCase))
-            return "text/plain";
-
-        if (fileName.Contains(".txt", StringComparison.OrdinalIgnoreCase))
-            return "text/plain";
-
-        return fileName.Contains(".png", StringComparison.OrdinalIgnoreCase) ? "image/png" : "application/octet-stream";
+        string ext = Path.GetExtension(url).ToLowerInvariant();
+        return ext switch
+        {
+            ".html" => "text/html",
+            ".htm" => "text/html",
+            ".js" => "application/javascript",
+            ".css" => "text/css",
+            ".png" => "image/png",
+            ".jpg" => "image/jpeg",
+            ".jpeg" => "image/jpeg",
+            ".gif" => "image/gif",
+            ".txt" => "text/plain",
+            ".json" => "application/json",
+            ".xml" => "application/xml",
+            ".mp3" => "audio/mpeg",
+            _ => "application/octet-stream"
+        };
     }
 
     private static string GetRedirectedUrl(string url)
     {
         try
         {
-            Logger.Log($"Network.GetRedirectedUrl input='{url}'");
-            var requestUrl = url ?? string.Empty;
-
-            if (!App.Args.UseEndpointLoadingScreen)
-            {
-                Logger.Log("Network.GetRedirectedUrl endpoint loading screen disabled, no redirection applied");
-                return requestUrl;
-            }
-
-
-            var endpointHost = App.Args.EndpointHost ?? string.Empty;
-            if (string.IsNullOrEmpty(endpointHost))
-            {
-                Logger.Log("Network.GetRedirectedUrl no endpoint host configured, no redirection applied");
-                return requestUrl;
-            }
-
-            const string prefix = "assets/img";
-            if (requestUrl.StartsWith(prefix, StringComparison.Ordinal))
-            {
-                Logger.Log(
-                    $"Network.GetRedirectedUrl applying redirection for '{requestUrl}' with endpoint '{endpointHost}'");
-                var rest = requestUrl.Substring(prefix.Length);
-                var redirected = $"https://{endpointHost}/launcher/loading{rest}";
-                Logger.Log($"Network.GetRedirectedUrl redirected '{url}' -> '{redirected}'");
-                return redirected;
-            }
-
-            Logger.Log(
-                $"Network.GetRedirectedUrl no matching redirection rule for '{requestUrl}', no redirection applied");
-            return requestUrl;
+            var req = new HttpRequestMessage(HttpMethod.Head, url);
+            var resp = SHttp.Send(req);
+            if ((int)resp.StatusCode >= 300 && (int)resp.StatusCode < 400 && resp.Headers.Location != null)
+                return resp.Headers.Location.IsAbsoluteUri ? resp.Headers.Location.ToString() : new Uri(new Uri(url), resp.Headers.Location).ToString();
         }
-        catch (Exception ex)
-        {
-            Logger.Log($"Network.GetRedirectedUrl failed for '{url}': {ex}");
-            return url ?? string.Empty;
-        }
+        catch { /* ignore */ }
+
+        return url;
     }
 
     private static string GetFileNameFromUrl(string url)
     {
         try
         {
-            var requestUrl = url ?? string.Empty;
-
-            if (Uri.TryCreate(requestUrl, UriKind.Absolute, out var abs))
-                return Path.GetFileName(abs.LocalPath);
-
-            var trimmed = requestUrl;
-            var q = trimmed.IndexOf('?');
-            if (q >= 0)
-                trimmed = trimmed.Substring(0, q);
-
-            var hash = trimmed.IndexOf('#');
-            if (hash >= 0)
-                trimmed = trimmed.Substring(0, hash);
-
-            return Path.GetFileName(trimmed);
+            var uri = new Uri(url);
+            return Path.GetFileName(uri.LocalPath);
         }
-        catch (Exception ex)
+        catch
         {
-            Logger.Log($"GetFileNameFromUrl failed for '{url}': {ex}");
-            return string.Empty;
+            return "unnamed";
         }
     }
 
-    public static bool TryGetInMemoryContent(string url, out byte[] content)
+    private static bool TryGetInMemoryContent(string url, out byte[] content)
     {
-        try
-        {
-            var fileName = Path.GetFileName(url).ToLowerInvariant();
-
-            if (fileName == "logininfo.php")
-            {
-                var addr = App.Args.ServerAddress ?? string.Empty;
-                content = Encoding.ASCII.GetBytes(addr + "\n");
-                return true;
-            }
-
-            if (fileName == "assetinfo.php")
-            {
-                var assetUrl = App.Args.AssetUrl ?? string.Empty;
-                content = Encoding.ASCII.GetBytes(assetUrl + "\n");
-                return true;
-            }
-
-            // 🔥 Add these cases for images
-            if (fileName == "unity-loadingbar.png" ||
-                fileName == "unity-loadingframe.png" ||
-                fileName == "unity-dexlabs.png")
-            {
-                var path = Path.Combine(AppContext.BaseDirectory, "assets", "img", fileName);
-                if (File.Exists(path))
-                {
-                    content = File.ReadAllBytes(path);
-                    return true;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.Log($"[Network] TryGetInMemoryContent failed for url='{url}': {ex}");
-        }
-
         content = Array.Empty<byte>();
-        return false;
+        return false; // implement memory caching if needed
     }
-
 
     private static string EnsureTrailingSlash(string url)
     {
-        if (string.IsNullOrEmpty(url)) return "";
-        return url.EndsWith("/") ? url : url + "/";
+        if (url.EndsWith("/")) return url;
+        return url + "/";
     }
 
-    public static int NextRequestId()
+    private static int NextRequestId()
     {
         return Interlocked.Increment(ref _sNextRequestId);
     }
 
-
-    public static void BeginRequest()
+    private static void BeginRequest()
     {
-        var active = Interlocked.Increment(ref _sActiveRequests);
-        Logger.Log($"Network.BeginRequest activeRequests={active}, mainRequested={_sMainRequested}");
+        Interlocked.Increment(ref _sActiveRequests);
     }
 
-    public static void CompleteRequest()
+    private static void CompleteRequest()
     {
-        var remaining = Interlocked.Decrement(ref _sActiveRequests);
-        Logger.Log($"Network.CompleteRequest remaining={remaining}, mainRequested={_sMainRequested}");
-
-        // ✅ DO NOT reset mainRequested here
-        // ✅ DO NOT requeue main automatically
+        Interlocked.Decrement(ref _sActiveRequests);
     }
-    
 
     private static bool TryInitFromCache(Request req)
     {
-        try
-        {
-            var cacheDir = Path.Combine(AppContext.BaseDirectory, "cache");
-            var cachePath = Path.Combine(cacheDir, Path.GetFileName(req.Url));
-
-            if (File.Exists(cachePath))
-            {
-                Logger.Log($"[Network] Cache hit for {req.Url} -> {cachePath}");
-                req.Source = new StreamSource(
-                    new FileStream(cachePath, FileMode.Open, FileAccess.Read, FileShare.Read),
-                    new FileInfo(cachePath).Length,
-                    null,
-                    null
-                );
-                req.End = (uint)Math.Min(req.Source.Length ?? 0, uint.MaxValue);
-                return true;
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.Log($"[Network] TryInitFromCache failed for {req.Url}: {ex.Message}");
-        }
-
-        return false;
+        return false; // implement caching logic if needed
     }
 
     private static async Task ProcessPostAsync(Request req, CancellationToken ct)
     {
-        try
+        if (req.PostData.Length == 0) return;
+
+        var target = req.TargetUri ?? throw new InvalidOperationException("Post request without TargetUri");
+        var httpReq = new HttpRequestMessage(HttpMethod.Post, target)
         {
-            var target = ResolveUri(req.Url);
-            (var headers, var payload) = SplitPostBuffer(req.PostData ?? Array.Empty<byte>());
+            Content = new ByteArrayContent(req.PostData)
+        };
 
-            using var content = new ByteArrayContent(payload);
-            ApplyPostHeaders(content, headers);
+        ApplyPostHeaders(httpReq, req);
 
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, target)
-            {
-                Content = content
-            };
+        var resp = await SendRequestAsync(httpReq, ct);
 
-            var httpResp = await SendRequestAsync(httpRequest, ct);
-
-            req.Source = new StreamSource(
-                await httpResp.Content.ReadAsStreamAsync(ct),
-                httpResp.Content.Headers.ContentLength,
-                httpResp,
-                null
-            );
-
-            req.End = (uint)Math.Min(req.Source.Length ?? 0, uint.MaxValue);
-            req.Initialized = true;
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            Logger.Log($"Network.ProcessPostAsync canceled requestId={req.Id}");
-            req.Failed = true;
-            req.Done = true;
-            req.DoneReason = NPRES_NETWORK_ERR;
-        }
-        catch (Exception ex)
-        {
-            FailRequest(req, "ProcessPostAsync", ex);
-        }
+        req.Source = new StreamSource(await resp.Content.ReadAsStreamAsync(ct), resp.Content.Headers.ContentLength, resp, null);
+        req.End = (uint)Math.Min(req.Source.Length ?? 0, uint.MaxValue);
     }
 
     private static HttpRequestMessage BuildHttpRequest(Request req, Uri target)
     {
-        var method = req.IsPost ? HttpMethod.Post : HttpMethod.Get;
-        var request = new HttpRequestMessage(method, target)
-        {
-            Version = new Version(1, 1),
-            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
-        };
-
-        if (!req.IsPost || req.PostData.Length <= 0) return request;
-        var (headers, payload) = SplitPostBuffer(req.PostData);
-        var content = new ByteArrayContent(payload);
-        ApplyPostHeaders(content, headers);
-        request.Content = content;
-
-        return request;
+        return new HttpRequestMessage(req.IsPost ? HttpMethod.Post : HttpMethod.Get, target);
     }
 
     private static async Task<HttpResponseMessage> SendRequestAsync(HttpRequestMessage request, CancellationToken ct)
     {
-        var resp = await SHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-        resp.EnsureSuccessStatusCode();
-        return resp;
+        return await SHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
     }
 
-    private static void FailRequest(Request req, string context, Exception? ex = null)
+    private static void FailRequest(Request req, string where, Exception ex)
     {
-        try
-        {
-            req.Failed = true;
-            req.Done = true;
-            req.DoneReason = NPRES_NETWORK_ERR;
-
-            // Only call NewStream if a valid StreamPtr already exists
-            if (req.StreamPtr != IntPtr.Zero)
-            {
-                Plugin_DestroyStream!(nppUnmanagedPtr, req.StreamPtr, NPRES_NETWORK_ERR);
-            }
-
-            if (req.DoNotify)
-            {
-                Plugin_UrlNotify!(nppUnmanagedPtr, req.UrlPtr, NPRES_NETWORK_ERR, req.NotifyData);
-            }
-
-            req.Completed = true;
-            CompleteRequest();
-
-            // Free memory
-            if (req.StreamPtr != IntPtr.Zero)
-            {
-                Marshal.FreeHGlobal(req.StreamPtr);
-                req.StreamPtr = IntPtr.Zero;
-            }
-        }
-        catch (Exception logEx)
-        {
-            Logger.Log(
-                $"[Network] FailRequest logging failed for requestId={req.Id}, url='{req.Url}', context={context}, ex={logEx}");
-        }
+        Logger.Log($"[Network] FailRequest in {where} for URL {req.Url}: {ex}");
+        req.Failed = true;
+        req.Done = true;
+        req.DoneReason = NPRES_NETWORK_ERR;
     }
+
+    private static IntPtr StringToUtf8(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return IntPtr.Zero;
+
+        byte[] bytes = Encoding.UTF8.GetBytes(s + "\0");
+        IntPtr ptr = Marshal.AllocHGlobal(bytes.Length);
+        Marshal.Copy(bytes, 0, ptr, bytes.Length);
+        SRetainedPluginAllocations.Add(ptr);
+        return ptr;
+    }
+
 }

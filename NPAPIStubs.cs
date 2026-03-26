@@ -22,7 +22,7 @@ namespace ffrunner
 
 
         // Exposed plugin delegate instances (marshaled from plugin function pointers)
-        public static NPAPIProcs.NPP_New_Unmanaged_Cdecl_ShortArg? Plugin_New;
+        public static NPAPIProcs.NPP_New_Unmanaged_Cdecl Plugin_New;
         public static NPAPIProcs.NPP_Destroy_Unmanaged_Cdecl? Plugin_Destroy;
         public static NPAPIProcs.NPP_SetWindow_Unmanaged_Cdecl? Plugin_SetWindow;
         public static NPAPIProcs.NPP_GetValue_Unmanaged_Cdecl? Plugin_GetValue;
@@ -600,7 +600,7 @@ namespace ffrunner
             if (funcs.newp != IntPtr.Zero)
             {
                 Plugin_New =
-                    Marshal.GetDelegateForFunctionPointer<NPAPIProcs.NPP_New_Unmanaged_Cdecl_ShortArg>(funcs.newp);
+                    Marshal.GetDelegateForFunctionPointer<NPAPIProcs.NPP_New_Unmanaged_Cdecl>(funcs.newp);
                 pinnedDelegates.Add(Plugin_New);
             }
 

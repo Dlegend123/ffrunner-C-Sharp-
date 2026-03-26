@@ -50,12 +50,12 @@ namespace ffrunner
                         break;
 
                     case WM_SIZE:
-                        RedrawPlugin(hwnd);
+                        //RedrawPlugin(hwnd);
                         break;
 
                     case WM_MOVE:
                         Logger.Verbose($"WndProc: window moved (msg=0x{msg:x})");
-                        NotifyWindowChanged(hwnd);
+                        //NotifyWindowChanged(hwnd);
                         break;
                 }
 
