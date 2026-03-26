@@ -6,6 +6,7 @@ using System.Text;
 using System.Windows;
 using static ffrunner.NPAPIProcs;
 using static ffrunner.Structs;
+using static ffrunner.Structs.NPVariant;
 using NPClass = ffrunner.Structs.NPClass;
 using NPObject = ffrunner.Structs.NPObject;
 
@@ -39,6 +40,7 @@ namespace ffrunner
         // Unmanaged pointers used by stubs and returned to plugin (must persist)
         public static IntPtr s_browserClassPtr = IntPtr.Zero;
         public static IntPtr s_browserObjectPtr = IntPtr.Zero;
+        public static IntPtr s_locationObjectPtr = IntPtr.Zero;
         private static string s_locationHref = string.Empty;
 
         // Identifier interning storage
@@ -303,7 +305,51 @@ namespace ffrunner
             return p;
         }
 
+        static void SetNPVariantVoid(IntPtr variantPtr)
+        {
+            var v = new NPVariant
+            {
+                type = NPVariantType.Void
+            };
+            Marshal.StructureToPtr(v, variantPtr, false);
+        }
 
+        static void SetNPVariantObject(IntPtr variantPtr, IntPtr objPtr)
+        {
+            var variant = new NPVariant
+            {
+                type = NPVariantType.Object,
+                value = new NPVariantValue { objectValue = objPtr }
+            };
+
+            Marshal.StructureToPtr(variant, variantPtr, false);
+        }
+
+        static void SetNPVariantString(IntPtr variantPtr, string str)
+        {
+            if (str == null)
+                str = "";
+
+            byte[] utf8 = Encoding.UTF8.GetBytes(str);
+
+            IntPtr strPtr = Marshal.AllocHGlobal(utf8.Length);
+            Marshal.Copy(utf8, 0, strPtr, utf8.Length);
+
+            var variant = new NPVariant
+            {
+                type = NPVariantType.String,
+                value = new NPVariantValue
+                {
+                    stringValue = new NPString
+                    {
+                        UTF8Characters = strPtr,
+                        UTF8Length = (uint)utf8.Length
+                    }
+                }
+            };
+
+            Marshal.StructureToPtr(variant, variantPtr, false);
+        }
 
         // Fill browser NPClass methods and create unmanaged NPClass/NPObject
         public static void FillBrowserFuncs(ref NPClass clazz)
@@ -426,10 +472,37 @@ namespace ffrunner
             var getPropertyDel = PinDelegate<NPAPIProcs.NP_GetPropertyDelegate>(
                 (IntPtr npobj, IntPtr name, IntPtr resultPtr) =>
                 {
-                    Logger.Log(
-                        $"NP_GetProperty obj=0x{npobj.ToString("x")}, name=0x{name.ToString("x")}, resultPtr=0x{resultPtr.ToString("x")}, resultBefore={DescribeNPVariantPtr(resultPtr)}");
+                    try
+                    {
+                        Logger.Log($"NP_GetProperty obj=0x{npobj:x}, name=0x{name:x}");
 
-                    return false;
+                        // window.location
+                        if (npobj == s_browserObjectPtr && IdentifierEqualsString(name, "location"))
+                        {
+                            SetNPVariantObject(resultPtr, s_locationObjectPtr);
+                            return true;
+                        }
+
+                        // location.href
+                        if (npobj == s_locationObjectPtr && IdentifierEqualsString(name, "href"))
+                        {
+                            string url = App.Args.MainPathOrAddress ?? "";
+                            
+                            SetNPVariantString(resultPtr, url);
+
+                            return true;
+                        }
+
+                        // IMPORTANT: explicitly set VOID
+                        SetNPVariantVoid(resultPtr);
+                        return false;
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"NP_GetProperty threw: {ex}");
+                        SetNPVariantVoid(resultPtr);
+                        return false;
+                    }
                 });
 
             var setPropertyDel = PinDelegate<NPAPIProcs.NP_SetPropertyDelegate>(
@@ -499,6 +572,16 @@ namespace ffrunner
 
             s_browserObjectPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPObject>());
             Marshal.StructureToPtr(browserObject, s_browserObjectPtr, false);
+
+            // Create location object (same class, like ffrunner.c)
+            var locationObj = new NPObject
+            {
+                _class = s_browserClassPtr,
+                referenceCount = 1,
+            };
+
+            s_locationObjectPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPObject>());
+            Marshal.StructureToPtr(locationObj, s_locationObjectPtr, false);
         }
 
         public static void InitPluginDelegates(NPPluginFuncs funcs)
