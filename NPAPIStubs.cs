@@ -42,7 +42,7 @@ namespace ffrunner
         public static IntPtr s_browserObjectPtr = IntPtr.Zero;
         public static IntPtr s_locationObjectPtr = IntPtr.Zero;
         private static string s_locationHref = string.Empty;
-
+        public static List<IntPtr> s_stringAllocs = new List<IntPtr>();
         // Identifier interning storage
         private static readonly Dictionary<string, IntPtr> s_identifierMap = new(StringComparer.Ordinal);
         private static readonly List<IntPtr> s_allocatedIdentifierPtrs = new();
@@ -332,8 +332,17 @@ namespace ffrunner
 
             byte[] utf8 = Encoding.UTF8.GetBytes(str);
 
-            IntPtr strPtr = Marshal.AllocHGlobal(utf8.Length);
+            // +1 for NULL terminator (CRITICAL)
+            IntPtr strPtr = Marshal.AllocHGlobal(utf8.Length + 1);
+
             Marshal.Copy(utf8, 0, strPtr, utf8.Length);
+            Marshal.WriteByte(strPtr, utf8.Length, 0);
+
+            // Keep pointer alive (matches ffrunner.c behavior)
+            lock (s_stringAllocs)
+            {
+                s_stringAllocs.Add(strPtr);
+            }
 
             var variant = new NPVariant
             {

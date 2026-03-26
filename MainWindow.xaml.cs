@@ -91,24 +91,28 @@ namespace ffrunner
 
             Logger.Verbose($"RedrawPlugin called for hwnd=0x{hwnd.ToString("x")}");
 
-            // Update the NPWindow dimensions in case the window was resized
-
-            if (GetClientRect(hwnd, out var rect))
+            // Ensure window is realized before querying client rect
+            if (hwnd != IntPtr.Zero && IsWindow(hwnd))
             {
-                PluginBootstrap.s_npWindow.x = 0;
-                PluginBootstrap.s_npWindow.y = 0;
-                PluginBootstrap.s_npWindow.width = (uint)rect.right;
-                PluginBootstrap.s_npWindow.height = (uint)rect.bottom;
-                PluginBootstrap.s_npWindow.clipRect.top = 0;
-                PluginBootstrap.s_npWindow.clipRect.left = 0;
-                PluginBootstrap.s_npWindow.clipRect.right = (ushort)Math.Min(ushort.MaxValue, rect.right);
-                PluginBootstrap.s_npWindow.clipRect.bottom = (ushort)Math.Min(ushort.MaxValue, rect.bottom);
+                if (GetClientRect(hwnd, out var rect))
+                {
+                    PluginBootstrap.s_npWindow.x = 0;
+                    PluginBootstrap.s_npWindow.y = 0;
+                    PluginBootstrap.s_npWindow.width = (uint)Math.Max(0, rect.right - rect.left);
+                    PluginBootstrap.s_npWindow.height = (uint)Math.Max(0, rect.bottom - rect.top);
+                    PluginBootstrap.s_npWindow.clipRect.top = 0;
+                    PluginBootstrap.s_npWindow.clipRect.left = 0;
+                    PluginBootstrap.s_npWindow.clipRect.right =
+                        (ushort)Math.Min(ushort.MaxValue, rect.right - rect.left);
+                    PluginBootstrap.s_npWindow.clipRect.bottom =
+                        (ushort)Math.Min(ushort.MaxValue, rect.bottom - rect.top);
 
-                var setwindow = Marshal.GetDelegateForFunctionPointer<NPAPIProcs.NPP_SetWindow_Unmanaged_Cdecl>(
-                    PluginBootstrap.pluginFuncs.setwindow
-                );
-                var ret = setwindow(PluginBootstrap.nppUnmanagedPtr, ref PluginBootstrap.s_npWindow);
-                Logger.Verbose($"RedrawPlugin: NPP_SetWindow returned {ret}");
+                    var setwindow = Marshal.GetDelegateForFunctionPointer<NPAPIProcs.NPP_SetWindow_Unmanaged_Cdecl>(
+                        PluginBootstrap.pluginFuncs.setwindow
+                    );
+                    var ret = setwindow(PluginBootstrap.nppUnmanagedPtr, ref PluginBootstrap.s_npWindow);
+                    Logger.Verbose($"RedrawPlugin: NPP_SetWindow returned {ret}");
+                }
             }
         }
 
@@ -387,7 +391,6 @@ namespace ffrunner
 
             Logger.Log("FreeInitBuffers completed");
         }
-
         private void OnSourceInitialized(object? sender, EventArgs e)
         {
             Logger.Log("OnSourceInitialized entered");
@@ -398,16 +401,22 @@ namespace ffrunner
             _hwndSource = HwndSource.FromHwnd(hwnd);
             _hwndSource?.AddHook(WndProc);
 
+            // ✅ Ensure the WPF window is fully realized before calling GetClientRect
+            this.Dispatcher.Invoke(() =>
+            {
+                this.UpdateLayout();     // Forces layout pass
+                this.Activate();         // Brings window to foreground
+            });
+
             try
             {
-                PluginBootstrap.StartPlugin(hwnd); // ✅ CORRECT TIMING
+                PluginBootstrap.StartPlugin(hwnd); // Now safe to call GetClientRect inside StartPlugin
                 UpdateNPWindowFromWpfWindow();
             }
             catch (Exception ex)
             {
                 Logger.Log($"StartPlugin failed: {ex}");
             }
-
         }
 
         protected override void OnClosed(EventArgs e)
@@ -440,6 +449,8 @@ namespace ffrunner
 
         [DllImport("user32.dll")]
         private static extern bool GetClientRect(IntPtr hWnd, out Win32Rect lpRect);
-        
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindow(IntPtr hWnd);
     }
 }

@@ -97,8 +97,9 @@ public static class Network
 
         public async ValueTask DisposeAsync()
         {
-            _response?.Dispose();
             await Stream.DisposeAsync();
+
+            _response?.Dispose();
         }
     }
 
@@ -151,20 +152,11 @@ public static class Network
 
             if (!PostMessage(_sHwnd, SIoMsg, IntPtr.Zero, GCHandle.ToIntPtr(req.Handle.Value)))
                 throw new InvalidOperationException($"Failed to post IO message: {Marshal.GetLastWin32Error()}");
-            try
+           
+            if (!await Task.Run(() => req.ReadyEvent.WaitOne(20000), ct))
             {
-                await Task.Run(() => req.ReadyEvent.WaitOne(20000), ct); // block until plugin signals
+                Logger.Log($"Network.PostRequestAsync timeout requestId={req.Id}");
             }
-            catch (OperationCanceledException)
-            {
-                Logger.Log($"Network.PostRequestAsync canceled for requestId={req.Id}");
-            }
-
-            if (ct.IsCancellationRequested)
-                Logger.Log($"Network.PostRequestAsync canceled for requestId={req.Id}");
-
-            if (!req.ReadyEvent.WaitOne(20000))
-                Logger.Log($"Network.PostRequestAsync timeout waiting for plugin to consume data, requestId={req.Id}");
         }
         catch (Exception ex)
         {
@@ -246,24 +238,30 @@ public static class Network
             if (req.DoNotify)
                 Plugin_UrlNotify!(nppUnmanagedPtr, req.UrlPtr, req.DoneReason, req.NotifyData);
 
-            req.Source?.DisposeAsync();
-            req.Source = null;
+            if (req.Source != null)
+            {
+                _ = req.Source.DisposeAsync(); // fire-and-forget async disposal
+                req.Source = null;
+            }
 
             req.Completed = true;
             CompleteRequest();
         }
     }
 
-    private static void CleanupRequest(Request req)
+    private static async Task CleanupRequestAsync(Request req)
     {
         try
         {
-            req.Source?.DisposeAsync().AsTask();
-            req.Source = null;
+            if (req.Source != null)
+            {
+                await req.Source.DisposeAsync();
+                req.Source = null;
+            }
         }
         catch (Exception ex)
         {
-            Logger.Log($"[Network] CleanupRequest failed to dispose source for requestId={req.Id}: {ex}");
+            Logger.Log($"[Network] CleanupRequestAsync failed: {ex}");
         }
 
         if (req.HeadersPtr != IntPtr.Zero)
@@ -298,7 +296,6 @@ public static class Network
 
         req.ReadyEvent.Dispose();
     }
-
 
     public static void RegisterGetRequest(string url, bool doNotify, IntPtr notifyData)
     {
@@ -354,7 +351,7 @@ public static class Network
     public static void Init()
     {
         EnsureWorker();
-        TryQueueMainRequest(); // ✅ ADD THIS
+        // ❌ DO NOTHING ELSE
     }
 
     public static void Shutdown()
@@ -430,7 +427,7 @@ public static class Network
     {
         try
         {
-            while (!req.Done)
+            while (!req.Done && !req.Completed)
             {
                 if (!req.Initialized)
                     await InitRequestAsync(req, ct);
@@ -457,7 +454,7 @@ public static class Network
         }
         finally
         {
-            CleanupRequest(req);
+            await CleanupRequestAsync(req);
             Logger.Log($"Network.ProcessRequestAsync end requestId={req.Id}, url='{req.Url}'");
         }
     }
@@ -526,8 +523,11 @@ public static class Network
                 if (req.DoNotify)
                     Plugin_UrlNotify!(nppUnmanagedPtr, req.UrlPtr, req.DoneReason, req.NotifyData);
 
-                req.Source?.DisposeAsync();
-                req.Source = null;
+                if (req.Source != null)
+                {
+                    await req.Source.DisposeAsync();
+                    req.Source = null;
+                }
 
                 req.Completed = true;
                 CompleteRequest();
@@ -814,7 +814,7 @@ public static class Network
                 AssetInfo info = new AssetInfo
                 {
                     Name = "",                          // typically empty
-                    Url = App.Args.AssetUrl ?? "",     // loader asset base URL
+                    Url = EnsureTrailingSlash(App.Args.AssetUrl ?? ""),     // loader asset base URL
                     Size = 0,
                     Flags = 0
                 };
@@ -846,6 +846,12 @@ public static class Network
         return false;
     }
 
+    private static string EnsureTrailingSlash(string url)
+    {
+        if (string.IsNullOrEmpty(url)) return "";
+        return url.EndsWith("/") ? url : url + "/";
+    }
+
     public static int NextRequestId()
     {
         return Interlocked.Increment(ref _sNextRequestId);
@@ -863,35 +869,10 @@ public static class Network
         var remaining = Interlocked.Decrement(ref _sActiveRequests);
         Logger.Log($"Network.CompleteRequest remaining={remaining}, mainRequested={_sMainRequested}");
 
-        // Reset main request when all done, and queue main if not active
-        if (remaining == 0)
-        {
-            _sMainRequested = 0;
-            TryQueueMainRequest();
-        }
+        // ✅ DO NOT reset mainRequested here
+        // ✅ DO NOT requeue main automatically
     }
-
-    private static void TryQueueMainRequest()
-    {
-        Logger.Log($"Network.TryQueueMainRequest mainRequested={_sMainRequested}, activeRequests={_sActiveRequests}");
-
-        if (_sMainRequested != 0 || _sActiveRequests != 0) return;
-
-        var main = App.Args.MainPathOrAddress ?? string.Empty;
-        if (string.IsNullOrEmpty(main)) return;
-
-        Logger.Log($"[Network] Queuing main request: {main}");
-        _sMainRequested = 1;
-
-        RegisterGetRequest(main, true, IntPtr.Zero);
-    }
-
-    private static string DescribeRequest(in Request req)
-    {
-        var notifyVal = req.NotifyData.ToInt64();
-        return
-            $"requestId={req.Id}, url='{req.Url}', doNotify={req.DoNotify}, notifyData=0x{notifyVal:x}, isPost={req.IsPost}";
-    }
+    
 
     private static bool TryInitFromCache(Request req)
     {
