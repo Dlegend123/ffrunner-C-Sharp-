@@ -1,4 +1,5 @@
 ﻿using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
 using System.IO;
 using System.Net.Http;
 using System.Runtime.InteropServices;
@@ -447,73 +448,35 @@ public static class Network
         {
             while (!req.Done && !req.Failed)
             {
-                int bytesRead = 0;
-
-                // --- Handle in-memory content ---
                 if (req.InMemoryData != null)
                 {
                     var remaining = req.InMemoryData.Length - req.InMemoryOffset;
                     if (remaining > 0)
                     {
-                        bytesRead = Math.Min(REQUEST_BUFFER_SIZE, remaining);
-                        Buffer.BlockCopy(req.InMemoryData, req.InMemoryOffset, req.Buffer, 0, bytesRead);
-                        req.InMemoryOffset += bytesRead;
+                        var toCopy = Math.Min(req.Buffer.Length, remaining);
+                        Buffer.BlockCopy(req.InMemoryData, req.InMemoryOffset, req.Buffer, 0, toCopy);
+                        req.InMemoryOffset += toCopy;
+                        req.WriteSize = toCopy;
                     }
                     else
                     {
-                        bytesRead = 0;
                         req.Done = true;
                         req.DoneReason = NPRES_DONE;
                     }
                 }
-                // --- Handle stream content (file or HTTP) ---
                 else if (req.Source?.Stream != null)
                 {
-                    bytesRead = await req.Source.Stream.ReadAsync(req.Buffer.AsMemory(0, REQUEST_BUFFER_SIZE), ct);
-                    if (bytesRead == 0)
-                    {
-                        req.Done = true;
-                        req.DoneReason = NPRES_DONE;
-                    }
+                    int toRead = Math.Min(REQUEST_BUFFER_SIZE, req.Buffer.Length);
+                    req.WriteSize = await req.Source.Stream.ReadAsync(req.Buffer.AsMemory(0, toRead), ct);
+                    if (req.WriteSize == 0) { req.Done = true; req.DoneReason = NPRES_DONE; }
                 }
 
-                req.WriteSize = bytesRead;
-
-                // --- Feed plugin ---
+                // 🔑 Always run write loop if WriteSize > 0
                 int writePtr = 0;
                 while (writePtr < req.WriteSize)
                 {
-                    if (req.StreamPtr == IntPtr.Zero)
-                    {
-                        // Create NPStream and call Plugin_NewStream (mirrors requests.c)
-                        req.UrlPtr = StringToUtf8(req.Url);
-                        req.MimeTypePtr = StringToUtf8(GetMimeType(req.Url));
-                        var streamStruct = new NPStream
-                        {
-                            url = req.UrlPtr,
-                            end = req.End,
-                            notifyData = req.NotifyData
-                        };
-                        req.StreamPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPStream>());
-                        Marshal.StructureToPtr(streamStruct, req.StreamPtr, false);
-
-                        int res = Plugin_NewStream!(nppUnmanagedPtr, req.MimeTypePtr, req.StreamPtr, 0, out var stype);
-                        req.StreamType = stype;
-                        if (res != 0)
-                        {
-                            req.Failed = true;
-                            req.Done = true;
-                            req.DoneReason = NPRES_NETWORK_ERR;
-                            break;
-                        }
-                    }
-
                     int ready = Plugin_WriteReady!(nppUnmanagedPtr, req.StreamPtr);
-                    if (ready <= 0)
-                    {
-                        await Task.Yield();
-                        continue;
-                    }
+                    if (ready <= 0) { await Task.Yield(); continue; }
 
                     int chunk = Math.Min(ready, req.WriteSize - writePtr);
                     if (req.UnmanagedBuffer == IntPtr.Zero)
@@ -522,40 +485,28 @@ public static class Network
                     Marshal.Copy(req.Buffer, writePtr, req.UnmanagedBuffer, chunk);
                     int written = Plugin_Write!(nppUnmanagedPtr, req.StreamPtr, req.BytesWritten, chunk, req.UnmanagedBuffer);
 
-                    if (written <= 0)
-                    {
-                        req.Failed = true;
-                        req.Done = true;
-                        req.DoneReason = NPRES_NETWORK_ERR;
-                        break;
-                    }
+                    if (written <= 0) { req.Failed = true; req.Done = true; break; }
 
                     writePtr += written;
                     req.BytesWritten += written;
                     req.WritePtr = writePtr;
                 }
+            }
 
-                // --- Mark completion if done ---
-                if (req.Done || req.Failed)
+            if (req.Done || req.Failed)
+            {
+                Plugin_DestroyStream!(nppUnmanagedPtr, req.StreamPtr, req.DoneReason);
+                if (req.DoNotify)
+                    Plugin_UrlNotify!(nppUnmanagedPtr, req.UrlPtr, req.DoneReason, req.NotifyData);
+
+                if (req.Source != null)
                 {
-                    if (req.StreamPtr != IntPtr.Zero)
-                    {
-                        Plugin_DestroyStream!(nppUnmanagedPtr, req.StreamPtr, req.DoneReason);
-                        req.StreamPtr = IntPtr.Zero;
-                    }
-
-                    if (req.DoNotify)
-                        Plugin_UrlNotify!(nppUnmanagedPtr, req.UrlPtr, req.DoneReason, req.NotifyData);
-
-                    if (req.Source != null)
-                    {
-                        await req.Source.DisposeAsync();
-                        req.Source = null;
-                    }
-
-                    req.Completed = true;
-                    CompleteRequest();
+                    await req.Source.DisposeAsync();
+                    req.Source = null;
                 }
+
+                req.Completed = true;
+                CompleteRequest();
             }
         }
         catch (Exception ex)
@@ -564,24 +515,43 @@ public static class Network
         }
     }
 
+
     private static async Task InitRequestAsync(Request req, CancellationToken ct)
     {
         req.EffectiveUrl = GetRedirectedUrl(req.Url);
 
         try
         {
+            // In-memory assets (loginInfo.php, assetInfo.php, PNGs)
             if (TryGetInMemoryContent(req.EffectiveUrl, out var inMemory))
             {
                 req.InMemoryData = inMemory;
                 req.InMemoryOffset = 0;
                 req.End = (uint)Math.Min(inMemory.Length, uint.MaxValue);
+
+                // NPStream must exist before first write
+                req.UrlPtr = StringToUtf8(req.Url);
+                req.MimeTypePtr = StringToUtf8(GetMimeType(req.Url));
+                var streamEmu = new NPStream
+                {
+                    url = req.UrlPtr,
+                    end = req.End,
+                    notifyData = req.NotifyData
+                };
+                req.StreamPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPStream>());
+                Marshal.StructureToPtr(streamEmu, req.StreamPtr, false);
+
+                int res = Plugin_NewStream!(nppUnmanagedPtr, req.MimeTypePtr, req.StreamPtr, 0, out var stype);
+                req.StreamType = stype;
+                if (res != 0) { req.Failed = true; req.Done = true; return; }
+
                 req.Initialized = true;
                 return;
             }
 
+            // Local file
             var target = ResolveUri(req.EffectiveUrl);
             req.TargetUri = target;
-
             if (target.IsFile && File.Exists(target.LocalPath))
             {
                 req.Source = new StreamSource(
@@ -591,17 +561,14 @@ public static class Network
                     null
                 );
                 req.End = (uint)Math.Min(req.Source.Length ?? 0, uint.MaxValue);
-                req.Initialized = true;
-                return;
             }
-
-            if (!req.IsPost && TryInitFromCache(req))
+            // Cache
+            else if (!req.IsPost && TryInitFromCache(req))
             {
-                req.Initialized = true;
-                return;
+                // Source already set
             }
-
-            if (!req.IsPost)
+            // HTTP GET
+            else if (!req.IsPost)
             {
                 var httpRequest = BuildHttpRequest(req, target);
                 var httpResp = await SendRequestAsync(httpRequest, ct);
@@ -614,9 +581,33 @@ public static class Network
                 );
                 req.End = (uint)Math.Min(req.Source.Length ?? 0, uint.MaxValue);
             }
-
-            if (req.IsPost)
+            // HTTP POST
+            else if (req.IsPost)
+            {
                 await ProcessPostAsync(req, ct);
+            }
+
+            // NPStream creation for file/HTTP sources
+            if (req.Source != null)
+            {
+                req.UrlPtr = StringToUtf8(req.Url);
+                req.MimeTypePtr = StringToUtf8(GetMimeType(req.Url));
+                req.HeadersPtr = !string.IsNullOrEmpty(req.Source.Headers) ? StringToUtf8(req.Source.Headers) : IntPtr.Zero;
+
+                var streamEmu = new NPStream
+                {
+                    url = req.UrlPtr,
+                    end = req.End,
+                    notifyData = req.NotifyData,
+                    headers = req.HeadersPtr
+                };
+                req.StreamPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPStream>());
+                Marshal.StructureToPtr(streamEmu, req.StreamPtr, false);
+
+                int res = Plugin_NewStream!(nppUnmanagedPtr, req.MimeTypePtr, req.StreamPtr, 0, out var stype);
+                req.StreamType = stype;
+                if (res != 0) { req.Failed = true; req.Done = true; return; }
+            }
         }
         catch (Exception ex)
         {
@@ -630,6 +621,7 @@ public static class Network
             req.Initialized = true;
         }
     }
+
 
     private static Uri ResolveUri(string url)
     {
