@@ -681,14 +681,13 @@ namespace ffrunner
                 }
 
                 // NPN_GetURLProc
-                var geturlDel = pin<NPAPIProcs.NPN_GetURLDelegate>((IntPtr instance, IntPtr urlPtr, IntPtr windowPtr) =>
+                var geturlDel = pin<NPAPIProcs.NPN_GetURLDelegate>((IntPtr instance, [MarshalAs(UnmanagedType.LPStr)] string url, [MarshalAs(UnmanagedType.LPTStr)]string window) =>
                 {
                     try
                     {
-                        var url = ReadAnsiString(urlPtr);
-                        var window = ReadAnsiString(windowPtr);
+
                         Logger.Log($"NPN_GetURL url='{url}', window='{window}'");
-                        Network.RegisterGetRequest(url, false, IntPtr.Zero);
+                        Application.Current.Dispatcher.Invoke(() => Network.RegisterGetRequest(url, false, IntPtr.Zero));
                     }
                     catch (Exception ex)
                     {
@@ -701,29 +700,18 @@ namespace ffrunner
 
                 // NPN_PostURLProc
                 var posturlDel = pin<NPAPIProcs.NPN_PostURLDelegate>(
-                    (IntPtr instance, IntPtr urlPtr,
-                        IntPtr windowPtr, uint len, IntPtr buf,
+                    (IntPtr instance, [MarshalAs(UnmanagedType.LPStr)] string url,
+                        [MarshalAs(UnmanagedType.LPStr)] string window, uint len, [MarshalAs(UnmanagedType.LPStr)] string buf,
                         [MarshalAs(UnmanagedType.I1)] bool file) =>
                     {
                         try
                         {
-                            Logger.Log(
-                                $"NPN_PostURL called urlPtr=0x{urlPtr.ToString("x")}, windowPtr=0x{windowPtr.ToString("x")}, len={len}, buf=0x{buf.ToString("x")}, file={file}");
-                            var url = ReadAnsiString(urlPtr);
-                            var window = ReadAnsiString(windowPtr);
-                            Logger.Log(
-                                $"NPN_PostURL url='{url}', window='{window}', len={len}, file={file}, buf=0x{buf.ToString("x")}");
 
-                            var data = Array.Empty<byte>();
-                            var safeLen = Math.Min(len, 0x1000u);
-                            if (safeLen > 0 && buf != IntPtr.Zero && IsReadablePointer(buf))
-                            {
-                                var n = checked((int)safeLen);
-                                data = new byte[n];
-                                Marshal.Copy(buf, data, 0, n);
-                            }
+                            Logger.Log(
+                                $"NPN_PostURL url='{url}', window='{window}', len={len}, file={file}, buf='{buf}'");
 
-                            Network.RegisterPostRequest(url, false, IntPtr.Zero, safeLen, data);
+
+                            Application.Current.Dispatcher.Invoke(() => Network.RegisterPostRequest(url, false, IntPtr.Zero, buf, len));
                         }
                         catch (Exception ex)
                         {
@@ -738,8 +726,8 @@ namespace ffrunner
                 userAgentPtr = userAgentHandle.AddrOfPinnedObject();
                 uagentDel = PinDelegate<NPAPIProcs.NPN_UserAgentDelegate>((IntPtr instance) =>
                 {
-                    Logger.Log($"NPN_UserAgent called, returning 'ffrunner'");
-                    return userAgentPtr;
+                    Logger.Log("NPN_UserAgent called, returning 'ffrunner'");
+                    return "ffrunner"; // CLR marshals this back as const char*
                 });
 
                 funcs.uagent = Marshal.GetFunctionPointerForDelegate(uagentDel);
@@ -748,17 +736,16 @@ namespace ffrunner
 
                 // NPN_GetURLNotifyProc
                 var geturlNotifyDel = pin<NPAPIProcs.NPN_GetURLNotifyDelegate>(
-                    (IntPtr instance, IntPtr urlPtr, IntPtr windowPtr, IntPtr notifyData) =>
+                    (IntPtr instance, [MarshalAs(UnmanagedType.LPStr)] string url,
+                        [MarshalAs(UnmanagedType.LPStr)] string window, IntPtr notifyData) =>
                     {
                         try
                         {
-                            var url = ReadAnsiString(urlPtr);
-                            var window = ReadAnsiString(windowPtr);
                             Logger.Log(
                                 $"NPN_GetURLNotify url='{url}', window='{window}', notifyData=0x{notifyData.ToString("x")}");
 
                             // Just enqueue the request with notifyData
-                            Network.RegisterGetRequest(url, true, notifyData);
+                            Application.Current.Dispatcher.Invoke(() => Network.RegisterGetRequest(url, true, notifyData));
                         }
                         catch (Exception ex)
                         {
@@ -788,27 +775,17 @@ namespace ffrunner
                 funcs.invoke = Marshal.GetFunctionPointerForDelegate(invokeStub);
                 // NPN_PostURLNotifyProc
                 var posturlNotifyDel = pin<NPAPIProcs.NPN_PostURLNotifyDelegate>(
-                    (IntPtr instance, IntPtr urlPtr,
-                        IntPtr windowPtr, uint len, IntPtr buf,
+                    (IntPtr instance, [MarshalAs(UnmanagedType.LPStr)] string url,
+                        [MarshalAs(UnmanagedType.LPStr)] string window, uint len, [MarshalAs(UnmanagedType.LPStr)] string buf,
                         [MarshalAs(UnmanagedType.I1)] bool file, IntPtr notifyData) =>
                     {
                         try
                         {
-                            var url = ReadAnsiString(urlPtr);
-                            var window = ReadAnsiString(windowPtr);
                             Logger.Log(
-                                $"NPN_PostURLNotify url='{url}', window='{window}', len={len}, file={file}, notifyData=0x{notifyData.ToString("x")}, buf=0x{buf.ToString("x")}");
+                                $"NPN_PostURLNotify url='{url}', window='{window}', len={len}, file={file}, notifyData=0x{notifyData.ToString("x")}, buf='{buf}'");
 
-                            var data = Array.Empty<byte>();
-                            var safeLen = Math.Min(len, 0x1000u);
-                            if (safeLen > 0 && buf != IntPtr.Zero && IsReadablePointer(buf))
-                            {
-                                var n = checked((int)safeLen);
-                                data = new byte[n];
-                                Marshal.Copy(buf, data, 0, n);
-                            }
 
-                            Network.RegisterPostRequest(url, true, notifyData, safeLen, data);
+                            Network.RegisterPostRequest(url, true, notifyData, buf, len);
                         }
                         catch (Exception ex)
                         {

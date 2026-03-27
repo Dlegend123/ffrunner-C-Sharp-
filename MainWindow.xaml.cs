@@ -14,7 +14,7 @@ namespace ffrunner
         private const int WM_MOVE = 0x0003;
         private const int WM_SIZE = 0x0005;
         private const int SIZE_MINIMIZED = 1;
-
+        public IntPtr PluginHwnd => new WindowInteropHelper(this).Handle;
         public MainWindow(Arguments args)
         {
             Logger.Log(
@@ -23,16 +23,7 @@ namespace ffrunner
             InitializeComponent();
             this.Width = args.WindowWidth;
             this.Height = args.WindowHeight;
-
-            if (args.Fullscreen)
-            {
-                WindowStyle = WindowStyle.None;
-                ResizeMode = ResizeMode.NoResize;
-                Topmost = true;
-                WindowState = WindowState.Maximized; // WPF fullscreen
-            }
-
-            SourceInitialized += OnSourceInitialized; // Hook HWND ready
+            
 
             Logger.Log(
                 $"MainWindow ctor completed ActualWidth={Width}, ActualHeight={Height}, WindowState={WindowState}");
@@ -50,12 +41,12 @@ namespace ffrunner
                         break;
 
                     case WM_SIZE:
-                        //RedrawPlugin(hwnd);
+                        RedrawPlugin(hwnd);
                         break;
 
                     case WM_MOVE:
                         Logger.Verbose($"WndProc: window moved (msg=0x{msg:x})");
-                        //NotifyWindowChanged(hwnd);
+                        NotifyWindowChanged(hwnd);
                         break;
                 }
 
@@ -253,47 +244,7 @@ namespace ffrunner
             }
         }
 
-        public static void UpdateNPWindowFromWpfWindow()
-        {
-            if (PluginBootstrap.pluginFuncs.setwindow == IntPtr.Zero || PluginBootstrap.nppUnmanagedPtr == IntPtr.Zero)
-                return;
-
-            var widthPx = App.Args.WindowWidth > 0 ? App.Args.WindowWidth : 1280;
-            var heightPx = App.Args.WindowHeight > 0 ? App.Args.WindowHeight : 720;
-
-            // --- Setup NPWindow safely ---
-            PluginBootstrap.s_npWindow = new Structs.NPWindow
-            {
-                window = new WindowInteropHelper(App.mainWindow).Handle,
-                x = 0,
-                y = 0,
-                width = (uint)widthPx,
-                height = (uint)heightPx,
-                type = (uint)Structs.NPWindowType.Window,
-                clipRect = new Structs.NPRect
-                {
-                    top = 0,
-                    left = 0,
-                    right = (ushort)Math.Min(ushort.MaxValue, widthPx),
-                    bottom = (ushort)Math.Min(ushort.MaxValue, heightPx)
-                }
-            };
-
-            // --- Call NPP_SetWindow safely ---
-            try
-            {
-                var setwindow =
-                    Marshal.GetDelegateForFunctionPointer<NPAPIProcs.NPP_SetWindow_Unmanaged_Cdecl>(PluginBootstrap
-                        .pluginFuncs.setwindow);
-                var ret = setwindow(PluginBootstrap.nppUnmanagedPtr, ref PluginBootstrap.s_npWindow);
-                Logger.Log($"Set NPWindow: {widthPx}x{heightPx}, NPP_SetWindow returned {ret}");
-                App.mainWindow.UpdateLayout();
-            }
-            catch (Exception ex)
-            {
-               // Logger.Log($"Error in NPP_SetWindow: {ex}");
-            }
-        }
+        
 
         private static bool NPWindowEquals(in Structs.NPWindow left, in Structs.NPWindow right)
         {
@@ -340,14 +291,14 @@ namespace ffrunner
                 // Destroy plugin instance first
                 if (NPAPIStubs.Plugin_Destroy != null && PluginBootstrap.nppUnmanagedPtr != IntPtr.Zero)
                 {
-                    if (PluginBootstrap.s_savedDataPtrPtr == IntPtr.Zero)
+                    if (PluginBootstrap.s_savedDataPtr == IntPtr.Zero)
                     {
-                        PluginBootstrap.s_savedDataPtrPtr = Marshal.AllocHGlobal(IntPtr.Size);
-                        Marshal.WriteIntPtr(PluginBootstrap.s_savedDataPtrPtr, PluginBootstrap.s_savedDataPtr);
+                        PluginBootstrap.s_savedDataPtr = Marshal.AllocHGlobal(IntPtr.Size);
+                        Marshal.WriteIntPtr(PluginBootstrap.s_savedDataPtr, PluginBootstrap.s_savedDataPtr);
                     }
 
                     var destroyRet = NPAPIStubs.Plugin_Destroy(PluginBootstrap.nppUnmanagedPtr,
-                        PluginBootstrap.s_savedDataPtrPtr);
+                        PluginBootstrap.s_savedDataPtr);
                     Logger.Log($"NPP_Destroy returned {destroyRet}");
                 }
 
@@ -363,10 +314,10 @@ namespace ffrunner
                // Logger.Log($"ShutdownPlugin error: {ex}");
             }
 
-            if (PluginBootstrap.s_savedDataPtrPtr != IntPtr.Zero)
+            if (PluginBootstrap.s_savedDataPtr!= IntPtr.Zero)
             {
-                Marshal.FreeHGlobal(PluginBootstrap.s_savedDataPtrPtr);
-                PluginBootstrap.s_savedDataPtrPtr = IntPtr.Zero;
+                Marshal.FreeHGlobal(PluginBootstrap.s_savedDataPtr);
+                PluginBootstrap.s_savedDataPtr = IntPtr.Zero;
             }
 
             if (PluginBootstrap.s_savedDataPtr != IntPtr.Zero)
@@ -439,15 +390,7 @@ namespace ffrunner
                 this.Activate();         // Brings window to foreground
             });
 
-            try
-            {
-                PluginBootstrap.StartPlugin(hwnd); // Now safe to call GetClientRect inside StartPlugin
-                UpdateNPWindowFromWpfWindow();
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"StartPlugin failed: {ex}");
-            }
+           
         }
 
         protected override void OnClosed(EventArgs e)

@@ -22,9 +22,9 @@ namespace ffrunner
         // ---------------------------
         // Plugin NPP_* (Cdecl)
         // ---------------------------
-        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
         public delegate short NPP_New_Unmanaged_Cdecl(
-            IntPtr pluginType,      // const char* MIME type → IntPtr for safety
+            [MarshalAs(UnmanagedType.LPStr)] string pluginType,
             IntPtr instance,        // NPP_t*
             ushort mode,            // uint16_t
             short argc,             // int16_t
@@ -43,7 +43,7 @@ namespace ffrunner
         public delegate short NPP_SetWindow_Unmanaged_Cdecl_Ptr(IntPtr instance, IntPtr windowPtr);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        public delegate short NPP_NewStream_Unmanaged_Cdecl(IntPtr instance, IntPtr type, IntPtr stream, int seekable, out ushort stype);
+        public delegate short NPP_NewStream_Unmanaged_Cdecl(IntPtr instance, [MarshalAs(UnmanagedType.LPStr)] string type, IntPtr stream, [MarshalAs(UnmanagedType.I1)] bool seekable, out ushort stype);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate short NPP_DestroyStream_Unmanaged_Cdecl(IntPtr instance, IntPtr streamPtr, short reason);
@@ -80,16 +80,36 @@ namespace ffrunner
         public delegate string NPN_UserAgentDelegate(IntPtr instance);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        public delegate short NPN_GetURLDelegate(IntPtr instance, IntPtr urlPtr, IntPtr windowPtr);
+        public delegate NPError NPN_GetURLDelegate(
+            IntPtr instance,
+            [MarshalAs(UnmanagedType.LPStr)] string url,
+            [MarshalAs(UnmanagedType.LPStr)] string window);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        public delegate short NPN_GetURLNotifyDelegate(IntPtr instance, IntPtr urlPtr, IntPtr windowPtr, IntPtr notifyData);
+        public delegate NPError NPN_GetURLNotifyDelegate(
+            IntPtr instance,
+            [MarshalAs(UnmanagedType.LPStr)] string url,
+            [MarshalAs(UnmanagedType.LPStr)] string window,
+            IntPtr notifyData);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        public delegate short NPN_PostURLDelegate(IntPtr instance, IntPtr urlPtr, IntPtr windowPtr, uint len, IntPtr buf, [MarshalAs(UnmanagedType.I1)] bool file);
+        public delegate NPError NPN_PostURLDelegate(
+            IntPtr instance,
+            [MarshalAs(UnmanagedType.LPStr)] string url,
+            [MarshalAs(UnmanagedType.LPStr)] string window,
+            uint len,
+            [MarshalAs(UnmanagedType.LPStr)] string buf,
+            [MarshalAs(UnmanagedType.I1)] bool file);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        public delegate short NPN_PostURLNotifyDelegate(IntPtr instance, IntPtr urlPtr, IntPtr windowPtr, uint len, IntPtr buf, [MarshalAs(UnmanagedType.I1)] bool file, IntPtr notifyData);
+        public delegate NPError NPN_PostURLNotifyDelegate(
+            IntPtr instance,
+            [MarshalAs(UnmanagedType.LPStr)] string url,
+            [MarshalAs(UnmanagedType.LPStr)] string window,
+            uint len,
+            [MarshalAs(UnmanagedType.LPStr)] string buf,
+            [MarshalAs(UnmanagedType.I1)] bool file,
+            IntPtr notifyData);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate IntPtr NPN_GetStringIdentifierDelegate(IntPtr namePtr);

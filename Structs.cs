@@ -4,7 +4,7 @@ namespace ffrunner
 {
     public class Structs
     {
-        [StructLayout(LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPObject
         {
             public IntPtr _class;
@@ -133,8 +133,6 @@ namespace ffrunner
             public IntPtr ndata;
         }
 
-
-        // Matches npapi.h values (Window=1, Drawable=2)
         public enum NPWindowType: uint
         {
             Window = 1,
@@ -163,11 +161,22 @@ namespace ffrunner
         }
 
         [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct NPStream
+        {
+            public IntPtr pdata;
+            public IntPtr ndata;
+            public IntPtr url;
+            public uint end;
+            public uint lastmodified;
+            public IntPtr notifyData;
+            public IntPtr headers;
+        }
+
+
+        [StructLayout(LayoutKind.Sequential)]
         public struct NPVariant
         {
-            public NPVariantType type; // 4 bytes
-
-            // Union starts immediately after type
+            public NPVariantType type;
             public NPVariantValue value;
 
             [StructLayout(LayoutKind.Explicit)]
@@ -177,7 +186,7 @@ namespace ffrunner
                 [FieldOffset(0)] public int intValue;
                 [FieldOffset(0)] public double doubleValue;
                 [FieldOffset(0)] public NPString stringValue;
-                [FieldOffset(0)] public IntPtr objectValue; // NPObject*
+                [FieldOffset(0)] public IntPtr objectValue;
             }
         }
 

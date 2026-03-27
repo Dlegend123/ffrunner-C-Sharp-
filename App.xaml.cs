@@ -2,7 +2,10 @@
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Interop;
 using Vortice.DXGI;
+using static ffrunner.NPAPIProcs;
+using static ffrunner.Structs;
 using static Vortice.DXGI.DXGI;
 
 namespace ffrunner
@@ -17,34 +20,6 @@ namespace ffrunner
         private const int SOk = 0;
         public static MainWindow? mainWindow;
         // StartPlugin follows the native ordering and keeps buffers alive for plugin lifetime.
-        public static void SetDependencies(Arguments args)
-        {
-            try
-            {
-
-                // Environment setup
-
-                // Init browser-side NPAPI structures used by plugin
-                EnableDpiAwareness();
-                SetUnityEnvironment(args);
-
-                Logger.Log(
-                    $"StartPlugin environment UNITY_HOME_DIR='{Environment.GetEnvironmentVariable("UNITY_HOME_DIR")}', CurrentDirectory='{Environment.CurrentDirectory}'");
-
-                // Load plugin DLL
-                NpUnityDll = LoadLibrary("npUnity3D32.dll");
-                if (NpUnityDll == IntPtr.Zero)
-                    throw new Exception($"Failed to load DLL: {Marshal.GetLastWin32Error()}");
-
-            }
-            catch (Exception ex)
-            {
-                //Logger.Log($"Plugin initialization failed: {ex}");
-                MessageBox.Show($"Plugin initialization failed: {ex.Message}", "Error", MessageBoxButton.OK,
-                    MessageBoxImage.Error);
-                throw;
-            }
-        }
 
         protected override void OnStartup(StartupEventArgs e)
         {
@@ -54,40 +29,88 @@ namespace ffrunner
 
             ShutdownMode = ShutdownMode.OnMainWindowClose;
 
+            // 1. Parse args early
             Args = ParseArgs(e.Args);
-            Logger.Init(Args.LogPath, Args.VerboseLogging);
+            
 
-            // === Load the plugin BEFORE creating window ===
-            SetDependencies(Args);
+            // 3. Init logging
+            Logger.Init(Args.LogPath, Args.VerboseLogging);
+            
+
+            // 6. Enable DPI awareness
+            EnableDpiAwareness();
+
+            // 7. Set environment variables
+            var launcherHome = SelectLauncherHomeDirectory();
+            Environment.CurrentDirectory = launcherHome;
+            Environment.SetEnvironmentVariable("UNITY_HOME_DIR", launcherHome);
+            Environment.SetEnvironmentVariable("UNITY_DISABLE_PLUGIN_UPDATES", "yes");
+            Environment.SetEnvironmentVariable("UNITY_KEEP_LOG_FILES", "yes");
+            if (Args.ForceVulkan) Environment.SetEnvironmentVariable("UNITY_FF_DX_DLL", "d3d9_vulkan.dll");
+
+            // 8. Apply VRAM fix
             ApplyVramFix();
 
-            // Now create the window
+            Logger.Log($"Environment setup complete. HOME='{launcherHome}'");
+
+            // 9. Create window (but don’t show yet)
             mainWindow = new MainWindow(Args);
             MainWindow = mainWindow;
 
             try
             {
-                App.Args.AssetUrl = @"C:\Users\Mark Morrison\Desktop\OpenFusion\OpenFusionLauncher\offline_cache\6543a2bb-d154-4087-b9ee-3c8aa778580a\";
-                App.Args.MainPathOrAddress = @"C:\Users\Mark Morrison\Desktop\OpenFusion\OpenFusionLauncher\offline_cache\6543a2bb-d154-4087-b9ee-3c8aa778580a\main.unity3d";
-                App.Args.ServerAddress = "127.0.0.1:8023";
-                App.Args.TegId = "mlegend123";
-                App.Args.AuthId = "mlegend123";
-                NormalizeLocalPaths(App.Args);
-                // Before showing the window or initializing the plugin
-                PluginMemory.InitMemory(
-                    App.Args.AssetUrl,
-                    App.Args.MainPathOrAddress,
-                    App.Args.TegId,
-                    App.Args.AuthId
-                );
+                // 10. Load plugin DLL
+                NpUnityDll = LoadLibrary("npUnity3D32.dll");
+                if (NpUnityDll == IntPtr.Zero)
+                    throw new Exception($"Failed to load DLL: {Marshal.GetLastWin32Error()}");
 
-                // Now the plugin can read MemoryBlock directly like requests.c does
+                Logger.Log("Plugin DLL loaded successfully");
+
+                // 11. Init NPAPI plumbing
+                NPAPIStubs.InitNetscapeFuncs(ref PluginBootstrap.NetscapeFuncs);
+                NPAPIStubs.FillBrowserFuncs(ref PluginBootstrap.BrowserClass);
+
+                // 12. Init network
+                Network.InitNetwork(Args.MainPathOrAddress ?? string.Empty);
+
+                // 13. Start plugin AFTER HWND ready
+                mainWindow.SourceInitialized += (_, __) =>
+                {
+                    Logger.Log("HWND READY — starting plugin");
+                    var hwnd = mainWindow.PluginHwnd;
+                    if (hwnd == IntPtr.Zero)
+                    {
+                        Logger.Log("ERROR: PluginHwnd is NULL");
+                        return;
+                    }
+
+                    try
+                    {
+                        PluginBootstrap.StartPlugin(hwnd);
+                        Logger.Log("Plugin started successfully AFTER HWND ready");
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"StartPlugin failed: {ex}");
+                    }
+                };
+
+                // 14. Show window LAST
                 mainWindow.Show();
             }
             catch (Exception ex)
             {
-                Logger.Log($"MainWindow.Show failed: {ex}");
+                Logger.Log($"Plugin initialization failed: {ex}");
+                MessageBox.Show($"Startup failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+        }
+
+        public static void RunOnUI(Action action)
+        {
+            if (Application.Current.Dispatcher.CheckAccess())
+                action();
+            else
+                Application.Current.Dispatcher.Invoke(action);
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -104,8 +127,19 @@ namespace ffrunner
         private static extern IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
 
         private const uint MONITOR_DEFAULTTOPRIMARY = 1;
-        
-        
+
+
+        [DllImport("user32.dll")]
+        private static extern bool GetClientRect(IntPtr hWnd, out Win32Rect lpRect);
+        // public enum NPWindowType { Window = 0, Drawable = 1 }
+        // public struct RECT { public int left, top, right, bottom; }
+        // with this Win32-only rect (for GetClientRect):
+        [StructLayout(LayoutKind.Sequential)]
+        private struct Win32Rect
+        {
+            public int left, top, right, bottom;
+        }
+
         private static void ApplyVramFix()
         {
             Logger.Log("ApplyVramFix entered");
