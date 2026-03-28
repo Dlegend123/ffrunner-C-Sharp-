@@ -22,7 +22,7 @@ namespace ffrunner
         // ---------------------------
         // Plugin NPP_* (Cdecl)
         // ---------------------------
-        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate short NPP_New_Unmanaged_Cdecl(
             [MarshalAs(UnmanagedType.LPStr)] string pluginType,
             IntPtr instance,        // NPP_t*
@@ -43,7 +43,12 @@ namespace ffrunner
         public delegate short NPP_SetWindow_Unmanaged_Cdecl_Ptr(IntPtr instance, IntPtr windowPtr);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        public delegate short NPP_NewStream_Unmanaged_Cdecl(IntPtr instance, [MarshalAs(UnmanagedType.LPStr)] string type, IntPtr stream, [MarshalAs(UnmanagedType.I1)] bool seekable, out ushort stype);
+        public delegate short NPP_NewStream_Unmanaged_Cdecl(IntPtr npp,
+            IntPtr mimeType,
+            IntPtr stream,
+            [MarshalAs(UnmanagedType.I1)] bool seekable,
+            out ushort streamType
+        );
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate short NPP_DestroyStream_Unmanaged_Cdecl(IntPtr instance, IntPtr streamPtr, short reason);

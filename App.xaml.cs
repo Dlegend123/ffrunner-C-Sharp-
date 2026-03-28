@@ -69,10 +69,7 @@ namespace ffrunner
                 // 11. Init NPAPI plumbing
                 NPAPIStubs.InitNetscapeFuncs(ref PluginBootstrap.NetscapeFuncs);
                 NPAPIStubs.FillBrowserFuncs(ref PluginBootstrap.BrowserClass);
-
-                // 12. Init network
-                Network.InitNetwork(Args.MainPathOrAddress ?? string.Empty);
-
+                
                 // 13. Start plugin AFTER HWND ready
                 mainWindow.SourceInitialized += (_, __) =>
                 {
@@ -86,6 +83,16 @@ namespace ffrunner
 
                     try
                     {
+
+                        mainWindow._hwndSource = HwndSource.FromHwnd(hwnd);
+                        mainWindow._hwndSource?.AddHook(mainWindow.WndProc);
+
+                        // ✅ Ensure the WPF window is fully realized before calling GetClientRect
+                        this.Dispatcher.Invoke(() =>
+                        {
+                            mainWindow.UpdateLayout();     // Forces layout pass
+                            mainWindow.Activate();         // Brings window to foreground
+                        });
                         PluginBootstrap.StartPlugin(hwnd);
                         Logger.Log("Plugin started successfully AFTER HWND ready");
                     }
@@ -97,6 +104,8 @@ namespace ffrunner
 
                 // 14. Show window LAST
                 mainWindow.Show();
+                mainWindow.UpdateLayout(); 
+                
             }
             catch (Exception ex)
             {
@@ -450,7 +459,13 @@ namespace ffrunner
             {
                 parsed.ServerAddress = Defaults.FALLBACK_SERVER_ADDRESS;
             }
-
+            parsed.AssetUrl =
+                @"C:\Users\Mark Morrison\source\repos\ffrunner\bin\x86\Debug\net8.0-windows\offline_cache\6543a2bb-d154-4087-b9ee-3c8aa778580a\";
+            parsed.MainPathOrAddress =
+                @"C:\Users\Mark Morrison\source\repos\ffrunner\bin\x86\Debug\net8.0-windows\offline_cache\6543a2bb-d154-4087-b9ee-3c8aa778580a\main.unity3d";
+            parsed.ServerAddress = "127.0.0.1:8023";
+            parsed.AuthId = "mlegend123";
+            parsed.TegId = "mlegend123";
             NormalizeLocalPaths(parsed);
 
             Logger.Log($"ParseArgs completed main='{parsed.MainPathOrAddress}', assetUrl='{parsed.AssetUrl}', address='{parsed.ServerAddress}', log='{parsed.LogPath}', width={parsed.WindowWidth}, height={parsed.WindowHeight}, fullscreen={parsed.Fullscreen}");

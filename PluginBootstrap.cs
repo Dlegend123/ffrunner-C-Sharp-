@@ -4,7 +4,7 @@ using System.Windows;
 using static ffrunner.NPAPIProcs;
 using static ffrunner.NPAPIStubs;
 using static ffrunner.Structs;
-
+using static ffrunner.StubHelper;
 namespace ffrunner
 {
     public static class PluginBootstrap
@@ -85,6 +85,7 @@ namespace ffrunner
                 "disableContextMenu","textcolor","logoimage","progressbarimage","progressframeimage"
             };
 
+            
             string[] argp = {
                 App.Args.MainPathOrAddress ?? "",
                 App.Args.WindowWidth.ToString(),
@@ -95,33 +96,27 @@ namespace ffrunner
                 App.NormalizePathOrUrl("assets/img/unity-loadingframe.png", true)
             };
 
-            InitPluginDelegates(pluginFuncs);
-            Network.InitNetwork(App.Args.MainPathOrAddress ?? string.Empty);
+            InitPluginDelegates(ref pluginFuncs);
 
+
+            // 12. Init network
+            Network.InitNetwork(App.Args.MainPathOrAddress ?? string.Empty);
             mimePtr = StringToUtf8("application/vnd.ffuwp");
             argnPtrs = argn.Select(StringToUtf8).ToArray();
             argpPtrs = argp.Select(StringToUtf8).ToArray();
 
-            argnUnmanaged = Marshal.AllocHGlobal(IntPtr.Size * argnPtrs.Length);
-            argpUnmanaged = Marshal.AllocHGlobal(IntPtr.Size * argpPtrs.Length);
+            argnUnmanaged = Marshal.AllocHGlobal(IntPtr.Size * (argnPtrs.Length + 1));
+            argpUnmanaged = Marshal.AllocHGlobal(IntPtr.Size * (argpPtrs.Length + 1));
             for (var i = 0; i < argnPtrs.Length; i++) Marshal.WriteIntPtr(argnUnmanaged, i * IntPtr.Size, argnPtrs[i]);
             Marshal.WriteIntPtr(argnUnmanaged, argnPtrs.Length * IntPtr.Size, IntPtr.Zero);
             for (var i = 0; i < argpPtrs.Length; i++) Marshal.WriteIntPtr(argpUnmanaged, i * IntPtr.Size, argpPtrs[i]);
             Marshal.WriteIntPtr(argpUnmanaged, argpPtrs.Length * IntPtr.Size, IntPtr.Zero);
 
-            nppUnmanagedPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPP_t>());
-            Marshal.StructureToPtr(new NPP_t(), nppUnmanagedPtr, false);
-
-            var saved = new NPSavedData();
+            nppUnmanagedPtr = Marshal.AllocHGlobal(Marshal.SizeOf<Structs.NPP_t>()); 
+            Marshal.StructureToPtr(new Structs.NPP_t(), nppUnmanagedPtr, false);
             s_savedDataPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NPSavedData>());
-            var nppStruct = new NPP_t
-            {
-                pdata = IntPtr.Zero,
-                ndata = IntPtr.Zero
-            };
-
-            Marshal.StructureToPtr(nppStruct, nppUnmanagedPtr, false);
-
+            s_savedDataPtrPtr = Marshal.AllocHGlobal(IntPtr.Size); 
+            Marshal.WriteIntPtr(s_savedDataPtrPtr, s_savedDataPtr);
             var newpPtr = pluginFuncs.newp;
             if (newpPtr == IntPtr.Zero)
                 throw new Exception("pluginFuncs.newp is NULL; cannot call NPP_New.");
@@ -135,12 +130,33 @@ namespace ffrunner
                 (short)argn.Length,
                 argnUnmanaged,
                 argpUnmanaged,
-                s_savedDataPtr); // ✅ FIXED: pass NPSavedData*, not **
+                s_savedDataPtrPtr); // ✅ FIXED: pass NPSavedData*, not **
 
             if (newpRet != 0)
                 throw new Exception($"NPP_New returned error code: {newpRet}");
             Logger.Log($"NPP_New returned {newpRet}");
+            if (!GetClientRect(hwnd, out var rect))
+                throw new Exception("GetClientRect failed");
 
+            int w = rect.right - rect.left;
+            int h = rect.bottom - rect.top;
+
+            s_npWindow = new Structs.NPWindow
+            {
+                window = hwnd,
+                x = 0,
+                y = 0,
+                width = (uint)w,
+                height = (uint)h,
+                clipRect = new Structs.NPRect
+                {
+                    top = 0,
+                    left = 0,
+                    right = (ushort)Math.Min(ushort.MaxValue, w),
+                    bottom = (ushort)Math.Min(ushort.MaxValue, h)
+                },
+                type = (uint)NPWindowType.Window
+            };
             var setwindow = Marshal.GetDelegateForFunctionPointer<NPP_SetWindow_Unmanaged_Cdecl>(pluginFuncs.setwindow);
             var ret = setwindow(nppUnmanagedPtr, ref s_npWindow);
             Logger.Log($"Initial NPP_SetWindow returned {ret}");
@@ -151,8 +167,9 @@ namespace ffrunner
             getvalue(nppUnmanagedPtr, NPPVpluginScriptableNPObject, ref scriptableObjectPtr);
 
             scriptableObject = scriptableObjectPtr;
-            NPAPIStubs.InitializeScriptableObject(scriptableObjectPtr);
-            NPAPIStubs.WarmUpScriptableObject(scriptableObjectPtr);
+
+            InitializeScriptableObject(scriptableObjectPtr);
+            WarmUpScriptableObject(scriptableObjectPtr);
         }
 
         [DllImport("kernel32.dll", SetLastError = true)]

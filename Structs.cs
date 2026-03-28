@@ -163,14 +163,15 @@ namespace ffrunner
         [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct NPStream
         {
-            public IntPtr pdata;
-            public IntPtr ndata;
-            public IntPtr url;
-            public uint end;
-            public uint lastmodified;
-            public IntPtr notifyData;
-            public IntPtr headers;
+            public IntPtr pdata;        // plug-in private data
+            public IntPtr ndata;        // netscape private data
+            public IntPtr url;          // const char*
+            public uint end;            // uint32_t
+            public uint lastmodified;   // uint32_t
+            public IntPtr notifyData;   // void*
+            public IntPtr headers;      // const char*
         }
+
 
 
         [StructLayout(LayoutKind.Sequential)]

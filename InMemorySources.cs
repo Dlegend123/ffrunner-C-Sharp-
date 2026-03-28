@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Runtime.InteropServices;
 using System.Text;
+using Vortice.DXGI;
 
 namespace ffrunner
 {
@@ -10,15 +11,18 @@ namespace ffrunner
         public static IntPtr serverAddress;
         public static IntPtr assetUrl;
 
+        public static IntPtr mainAddress;
+
         // Initialize memory like ffrunner.c
         public static void Init()
         {
             // Example content, match your actual Unity expectations
             string loginInfo = $"username={App.Args.AuthId}&password={App.Args.TegId}&server={App.Args.ServerAddress}";
-            serverAddress = AllocateCString(loginInfo);
+            serverAddress = AllocateCString(App.Args.ServerAddress);
 
             string assetInfo = App.Args.AssetUrl;
             assetUrl = AllocateCString(assetInfo);
+            mainAddress = AllocateCString(App.Args.MainPathOrAddress);
         }
 
         // Allocate unmanaged memory for a null-terminated C string

@@ -7,13 +7,14 @@ namespace ffrunner
 {
     public partial class MainWindow : Window
     {
-        private HwndSource? _hwndSource;
+        public HwndSource? _hwndSource;
 
         private const int WM_CLOSE = 0x0010;
         private const int WM_DESTROY = 0x0002;
         private const int WM_MOVE = 0x0003;
         private const int WM_SIZE = 0x0005;
         private const int SIZE_MINIMIZED = 1;
+        private const int WM_PAINT = 0x000F;
         public IntPtr PluginHwnd => new WindowInteropHelper(this).Handle;
         public MainWindow(Arguments args)
         {
@@ -29,7 +30,7 @@ namespace ffrunner
                 $"MainWindow ctor completed ActualWidth={Width}, ActualHeight={Height}, WindowState={WindowState}");
         }
 
-        private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+        public IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
             try
             {
@@ -39,63 +40,65 @@ namespace ffrunner
                     case WM_DESTROY:
                         NotifyWindowClosed();
                         break;
-
-                    case WM_SIZE:
+                    case WM_PAINT:
                         RedrawPlugin(hwnd);
                         break;
-
+                    case WM_SIZE:
                     case WM_MOVE:
                         Logger.Verbose($"WndProc: window moved (msg=0x{msg:x})");
                         NotifyWindowChanged(hwnd);
                         break;
                 }
 
-                // --- Handle custom network message safely ---
+                // --- Handle custom network message ---
                 if (msg == Network.SIoMsg && lParam != IntPtr.Zero)
                 {
-                    GCHandle handle;
+
                     try
                     {
-                        handle = GCHandle.FromIntPtr(lParam);
+                        GCHandle handle = GCHandle.FromIntPtr(lParam); 
+                        if (handle.Target is Network.Request req)
+                        {
+                            // --- Process request ---
+                            Network.HandleIOProgress(req);
+
+                            // --- Cleanup or signal ---
+                            if (req is { Completed: true, Handle.IsAllocated: true })
+                            {
+                                try
+                                {
+                                    req.Handle.Value.Free();
+                                    Logger.Verbose($"WndProc freed GCHandle for requestId={req.Id}");
+                                }
+                                catch
+                                {
+                                    Logger.Verbose($"WndProc: GCHandle already freed for requestId={req.Id}");
+                                }
+                                finally
+                                {
+                                    req.Handle = null;
+                                }
+                            }
+                            else
+                            {
+                                req.ReadyEvent.Set();
+                            }
+                        }
+
+                        handled = true;
+                        return IntPtr.Zero;
                     }
                     catch
                     {
-                        Logger.Verbose("Invalid GCHandle in WndProc, skipping.");
+                        Logger.Verbose("WndProc: Invalid GCHandle in lParam");
                         handled = true;
                         return IntPtr.Zero;
                     }
 
-                    if (handle.Target is Network.Request req)
-                    {
-                        Network.HandleIoProgress(req);
+                   
 
-                        // --- Safely free GCHandle only once ---
-                        if (req.Completed && req.Handle?.IsAllocated == true)
-                        {
-                            try
-                            {
-                                req.Handle.Value.Free();
-                                Logger.Verbose($"WndProc freed GCHandle for requestId={req.Id}");
-                            }
-                            catch
-                            {
-                                Logger.Verbose($"WndProc: GCHandle already freed for requestId={req.Id}");
-                            }
-                            finally
-                            {
-                                req.Handle = null;
-                            }
-                        }
-                        else
-                        {
-                            req.ReadyEvent.Set();
-                        }
-                    }
-
-                    handled = true;
-                    return IntPtr.Zero;
+                    
                 }
-
             }
             catch (Exception ex)
             {

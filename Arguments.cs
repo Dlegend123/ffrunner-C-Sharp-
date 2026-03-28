@@ -1,4 +1,13 @@
-﻿namespace ffrunner
+﻿using ffrunner;
+using System.Collections.Concurrent;
+using System.IO;
+using System.Net.Http;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Windows.Threading;
+using static ffrunner.Structs;
+
+namespace ffrunner
 {
     public static class Defaults
     {
@@ -34,6 +43,4 @@
         public bool ForceVulkan { get; set; } = false;
         public bool ForceOpenGl { get; set; } = false;
     }
-
-
 }
